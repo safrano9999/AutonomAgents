@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="$SCRIPT_DIR/output"
 CONF_FILE="$SCRIPT_DIR/airgap.conf"
 LEDGER_FILE="$SCRIPT_DIR/output/.ledger"
+DEPLOYED_FILE="$SCRIPT_DIR/output/.deployed"
 
 # --- load config ---
 ENABLE_OPENCLAW=""
@@ -17,22 +18,26 @@ fi
 MODE=""
 ARCH=""
 OPENCLAW_VERSION=""
-HERMES_IMAGE="${HERMES_IMAGE:-hermes-agent:latest}"
+HERMES_VERSION=""
 SAVE_ENGINE="${SAVE_ENGINE:-podman}"
 LOAD_ENGINE="${LOAD_ENGINE:-docker}"
+
+# --- registries ---
+OPENCLAW_REGISTRY="${OPENCLAW_REGISTRY:-ghcr.io/openclaw/openclaw}"
+HERMES_REGISTRY="${HERMES_REGISTRY:-docker.io/nousresearch/hermes-agent}"
 
 usage() {
   cat <<EOF
 Usage: $(basename "$0") --save|--load [options]
 
 Modes:
-  --save       Build/save images and compress repo (connected machine, uses $SAVE_ENGINE)
-  --load       Load images and patch setup (airgapped machine, uses $LOAD_ENGINE)
+  --save       Pull images from registry and save (connected machine)
+  --load       Load images and patch setup (airgapped machine)
 
 Options:
   --arch ARCH                Platform, e.g. linux/arm64 or linux/amd64
-  --openclaw-version VER     OpenClaw version (optional for --save: auto-detects latest major release)
-  --hermes-image IMAGE       Hermes image name (default: $HERMES_IMAGE)
+  --openclaw-version VER     OpenClaw version or "latest" (default: auto-detect newest stable)
+  --hermes-version VER       Hermes version or "latest" (default: auto-detect newest stable)
   --force                    Re-export even if version already in ledger
   --reconfigure              Re-run component selection dialog
 
@@ -40,11 +45,14 @@ Config: $CONF_FILE
 Ledger: $LEDGER_FILE (tracks exported version:arch to prevent duplicates)
 
 Examples:
-  # Auto-detect latest release:
+  # Auto-detect latest stable releases:
   ./airgapped.sh --save --arch linux/arm64
 
-  # Pin specific version:
-  ./airgapped.sh --save --arch linux/arm64 --openclaw-version 2026.4.26
+  # Use latest tag:
+  ./airgapped.sh --save --arch linux/arm64 --openclaw-version latest --hermes-version latest
+
+  # Pin specific versions:
+  ./airgapped.sh --save --arch linux/arm64 --openclaw-version 2026.4.26 --hermes-version v2026.4.23
   ./airgapped.sh --load --arch linux/arm64 --openclaw-version 2026.4.26
 EOF
   exit 1
@@ -59,7 +67,7 @@ while [[ $# -gt 0 ]]; do
     --load) MODE="load"; shift ;;
     --arch) ARCH="$2"; shift 2 ;;
     --openclaw-version) OPENCLAW_VERSION="$2"; shift 2 ;;
-    --hermes-image) HERMES_IMAGE="$2"; shift 2 ;;
+    --hermes-version) HERMES_VERSION="$2"; shift 2 ;;
     --force) FORCE=true; shift ;;
     --reconfigure) RECONFIGURE=true; shift ;;
     -h|--help) usage ;;
@@ -83,57 +91,120 @@ if ! echo "$VALID_ARCHS" | grep -qw "$ARCH_SUFFIX"; then
 fi
 
 # ============================================================
-#  Auto-detect latest major release from GitHub
+#  Version detection helpers
 # ============================================================
-fetch_latest_version() {
-  local repo="${OPENCLAW_REPO:-https://github.com/openclaw/openclaw}"
-  # extract owner/repo from URL
-  local owner_repo
-  owner_repo="$(echo "$repo" | sed 's|.*github\.com/||; s|\.git$||')"
 
+# Fetch latest stable GitHub release (skips beta/alpha/rc)
+fetch_latest_gh_version() {
+  local owner_repo="$1"
   echo "==> Checking latest release from $owner_repo..." >&2
 
-  local releases_json
-  if ! releases_json="$(gh api "repos/$owner_repo/releases" \
+  local tag
+  if tag="$(gh api "repos/$owner_repo/releases" \
     --jq '[.[] | select(.prerelease == false and (.tag_name | test("beta|alpha|rc") | not)) | .tag_name] | first' \
     2>/dev/null)"; then
-    # fallback: try curl if gh is not available
-    if ! releases_json="$(curl -sf "https://api.github.com/repos/$owner_repo/releases" \
-      | python3 -c "
+    :
+  elif tag="$(curl -sf "https://api.github.com/repos/$owner_repo/releases" \
+    | python3 -c "
 import sys, json
-releases = json.load(sys.stdin)
-for r in releases:
-    tag = r['tag_name']
-    if not r['prerelease'] and not any(x in tag for x in ['beta','alpha','rc']):
-        print(tag)
-        break
+for r in json.load(sys.stdin):
+    t = r['tag_name']
+    if not r['prerelease'] and not any(x in t for x in ['beta','alpha','rc']):
+        print(t); break
 " 2>/dev/null)"; then
-      echo "ERROR: Could not fetch releases from GitHub. Specify --openclaw-version manually." >&2
-      exit 1
-    fi
+    :
+  else
+    echo "ERROR: Could not fetch releases from $owner_repo" >&2
+    return 1
   fi
 
-  # strip leading 'v' if present: v2026.4.26 -> 2026.4.26
-  releases_json="${releases_json#v}"
-
-  if [[ -z "$releases_json" ]]; then
-    echo "ERROR: No stable release found. Specify --openclaw-version manually." >&2
-    exit 1
-  fi
-
-  echo "$releases_json"
+  tag="${tag#v}"  # v2026.4.26 -> 2026.4.26
+  [[ -z "$tag" ]] && { echo "ERROR: No stable release found for $owner_repo" >&2; return 1; }
+  echo "$tag"
 }
 
-# auto-detect version for --save if not specified
-if [[ -z "$OPENCLAW_VERSION" ]]; then
-  if [[ "$MODE" == "save" ]]; then
-    OPENCLAW_VERSION="$(fetch_latest_version)"
-    echo "==> Latest major release: v$OPENCLAW_VERSION"
+# Fetch latest stable Docker Hub tag (skips latest/beta/alpha/rc)
+fetch_latest_dockerhub_version() {
+  local repo="$1"  # e.g. nousresearch/hermes-agent
+  echo "==> Checking latest tag from Docker Hub $repo..." >&2
+
+  local tag
+  if tag="$(curl -sf "https://hub.docker.com/v2/repositories/$repo/tags/?page_size=25&ordering=last_updated" \
+    | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for t in data.get('results', []):
+    name = t['name']
+    if name == 'latest':
+        continue
+    if any(x in name for x in ['beta','alpha','rc']):
+        continue
+    print(name)
+    break
+" 2>/dev/null)"; then
+    :
   else
-    echo "ERROR: --openclaw-version required for --load (no internet on airgapped machine)" >&2
-    usage
+    echo "ERROR: Could not fetch tags from Docker Hub for $repo" >&2
+    return 1
   fi
-fi
+
+  tag="${tag#v}"
+  [[ -z "$tag" ]] && { echo "ERROR: No stable tag found for $repo" >&2; return 1; }
+  echo "$tag"
+}
+
+# Detect version from archive filenames (for --load on airgapped)
+detect_version_from_archives() {
+  local prefix="$1"  # openclaw or hermes
+  local latest=""
+  local f
+  for dir in "$OUTPUT_DIR" "$PWD" "$SCRIPT_DIR"; do
+    for f in "$dir"/${prefix}_${ARCH_SUFFIX}_v*.tar.gz 2>/dev/null; do
+      [[ -f "$f" ]] || continue
+      local base ver
+      base="$(basename "$f")"
+      ver="${base#${prefix}_${ARCH_SUFFIX}_v}"
+      ver="${ver%.tar.gz}"
+      if [[ -z "$latest" || "$ver" > "$latest" ]]; then
+        latest="$ver"
+      fi
+    done
+  done
+  echo "$latest"
+}
+
+# --- resolve versions ---
+resolve_openclaw_version() {
+  if [[ "$OPENCLAW_VERSION" == "latest" ]]; then
+    echo "latest"
+    return
+  fi
+  if [[ -z "$OPENCLAW_VERSION" ]]; then
+    if [[ "$MODE" == "save" ]]; then
+      OPENCLAW_VERSION="$(fetch_latest_gh_version "openclaw/openclaw")" || exit 1
+    elif [[ "$MODE" == "load" ]]; then
+      OPENCLAW_VERSION="$(detect_version_from_archives "openclaw")"
+      [[ -z "$OPENCLAW_VERSION" ]] && { echo "ERROR: No openclaw archives found. Use --openclaw-version" >&2; exit 1; }
+    fi
+  fi
+  echo "$OPENCLAW_VERSION"
+}
+
+resolve_hermes_version() {
+  if [[ "$HERMES_VERSION" == "latest" ]]; then
+    echo "latest"
+    return
+  fi
+  if [[ -z "$HERMES_VERSION" ]]; then
+    if [[ "$MODE" == "save" ]]; then
+      HERMES_VERSION="$(fetch_latest_dockerhub_version "nousresearch/hermes-agent")" || exit 1
+    elif [[ "$MODE" == "load" ]]; then
+      HERMES_VERSION="$(detect_version_from_archives "hermes")"
+      [[ -z "$HERMES_VERSION" ]] && { echo "WARNING: No hermes archives found" >&2; HERMES_VERSION=""; }
+    fi
+  fi
+  echo "$HERMES_VERSION"
+}
 
 # ============================================================
 #  Interactive setup dialog
@@ -157,28 +228,6 @@ ask_yes_no() {
   done
 }
 
-write_config() {
-  cat > "$CONF_FILE" <<EOF
-# airgap.conf - auto-generated by setup dialog
-# Re-run with --reconfigure to change
-
-# components
-ENABLE_OPENCLAW="$ENABLE_OPENCLAW"
-ENABLE_HERMES="$ENABLE_HERMES"
-
-# openclaw
-OPENCLAW_REPO="https://github.com/openclaw/openclaw"
-OPENCLAW_BUILD_ARGS="--build-arg OPENCLAW_DOCKER_APT_PACKAGES= --build-arg OPENCLAW_EXTENSIONS= --build-arg OPENCLAW_INSTALL_DOCKER_CLI="
-
-# hermes
-HERMES_IMAGE="$HERMES_IMAGE"
-
-# engine per side
-SAVE_ENGINE="$SAVE_ENGINE"
-LOAD_ENGINE="$LOAD_ENGINE"
-EOF
-}
-
 ask_choice() {
   local prompt="$1"
   shift
@@ -196,6 +245,28 @@ ask_choice() {
     fi
     echo "  Invalid choice."
   done
+}
+
+write_config() {
+  cat > "$CONF_FILE" <<EOF
+# airgap.conf - auto-generated by setup dialog
+# Re-run with --reconfigure to change
+
+# components
+ENABLE_OPENCLAW="$ENABLE_OPENCLAW"
+ENABLE_HERMES="$ENABLE_HERMES"
+
+# registries (pull from here, no local build needed)
+OPENCLAW_REGISTRY="$OPENCLAW_REGISTRY"
+HERMES_REGISTRY="$HERMES_REGISTRY"
+
+# openclaw repo (needed for setup scripts on airgapped side)
+OPENCLAW_REPO="https://github.com/openclaw/openclaw"
+
+# engine per side
+SAVE_ENGINE="$SAVE_ENGINE"
+LOAD_ENGINE="$LOAD_ENGINE"
+EOF
 }
 
 run_setup_dialog() {
@@ -220,7 +291,7 @@ run_setup_dialog() {
   fi
 
   echo ""
-  echo "Container engine for building/saving (this machine):"
+  echo "Container engine for pulling/saving (this machine):"
   SAVE_ENGINE="$(ask_choice "" "podman" "docker")"
 
   echo "Container engine for loading/deploying (airgapped machine):"
@@ -229,7 +300,7 @@ run_setup_dialog() {
   echo ""
   echo "  Hermes Agent:    $ENABLE_HERMES"
   echo "  OpenClaw:        $ENABLE_OPENCLAW"
-  echo "  Build engine:    $SAVE_ENGINE"
+  echo "  Pull engine:     $SAVE_ENGINE"
   echo "  Deploy engine:   $LOAD_ENGINE"
   echo ""
 
@@ -251,7 +322,20 @@ if needs_setup; then
 fi
 
 # ============================================================
-#  QEMU cross-arch check
+#  Resolve versions (after setup dialog, before file names)
+# ============================================================
+if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
+  OPENCLAW_VERSION="$(resolve_openclaw_version)"
+  echo "==> OpenClaw version: $OPENCLAW_VERSION"
+fi
+
+if [[ "$ENABLE_HERMES" == "yes" ]]; then
+  HERMES_VERSION="$(resolve_hermes_version)"
+  [[ -n "$HERMES_VERSION" ]] && echo "==> Hermes version: $HERMES_VERSION"
+fi
+
+# ============================================================
+#  QEMU cross-arch check (only needed for running, not pulling)
 # ============================================================
 check_qemu() {
   local host_arch
@@ -266,7 +350,7 @@ check_qemu() {
     return 0
   fi
 
-  echo "==> Cross-architecture build: host=$host_arch, target=$ARCH_SUFFIX"
+  echo "==> Cross-architecture detected: host=$host_arch, target=$ARCH_SUFFIX"
 
   local binfmt_dir="/proc/sys/fs/binfmt_misc"
   local qemu_registered=false
@@ -286,24 +370,26 @@ check_qemu() {
   fi
 
   echo ""
-  echo "ERROR: QEMU user-space emulation not available for $ARCH_SUFFIX" >&2
+  echo "WARNING: QEMU user-space emulation not available for $ARCH_SUFFIX" >&2
+  echo "  Pulling images works fine, but running them locally needs QEMU." >&2
   echo "" >&2
-  echo "  Cross-architecture builds need qemu-user-static. Install it (requires root):" >&2
-  echo "" >&2
-  echo "  Option A - system package:" >&2
-  echo "    sudo apt install qemu-user-static" >&2
-  echo "    sudo systemctl restart systemd-binfmt" >&2
-  echo "" >&2
-  echo "  Option B - via container:" >&2
+  echo "  Install (requires root):" >&2
+  echo "    sudo apt install qemu-user-static && sudo systemctl restart systemd-binfmt" >&2
+  echo "  Or:" >&2
   echo "    sudo podman run --privileged --rm tonistiigi/binfmt --install $ARCH_SUFFIX" >&2
   echo "" >&2
-  exit 1
 }
 
-# file names
-OPENCLAW_IMAGE_FILE="openclaw_${ARCH_SUFFIX}_v${OPENCLAW_VERSION}.tar.gz"
-OPENCLAW_REPO_FILE="openclaw_github_v${OPENCLAW_VERSION}.tar.gz"
-HERMES_IMAGE_FILE="hermes_${ARCH_SUFFIX}_v${OPENCLAW_VERSION}.tar.gz"
+# --- file names ---
+oc_image_file() {
+  echo "openclaw_${ARCH_SUFFIX}_v${OPENCLAW_VERSION}.tar.gz"
+}
+oc_repo_file() {
+  echo "openclaw_github_v${OPENCLAW_VERSION}.tar.gz"
+}
+hermes_image_file() {
+  echo "hermes_${ARCH_SUFFIX}_v${HERMES_VERSION}.tar.gz"
+}
 
 # --- ledger: duplicate prevention ---
 ledger_contains() {
@@ -317,79 +403,108 @@ ledger_add() {
   echo "$entry" >> "$LEDGER_FILE"
 }
 
+# --- deployed version tracking ---
+get_deployed_version() {
+  local component="$1"
+  if [[ -f "$DEPLOYED_FILE" ]]; then
+    grep "^${component}:${ARCH_SUFFIX}:" "$DEPLOYED_FILE" 2>/dev/null | tail -1 | cut -d: -f3
+  fi
+}
+
+set_deployed_version() {
+  local component="$1"
+  local version="$2"
+  mkdir -p "$(dirname "$DEPLOYED_FILE")"
+  if [[ -f "$DEPLOYED_FILE" ]]; then
+    sed -i "/^${component}:${ARCH_SUFFIX}:/d" "$DEPLOYED_FILE"
+  fi
+  echo "${component}:${ARCH_SUFFIX}:${version}" >> "$DEPLOYED_FILE"
+}
+
 # ============================================================
-#  --save: connected machine (podman)
+#  --save: pull from registry and save (connected machine)
 # ============================================================
 do_save() {
-  check_qemu
-
   # --- check if anything needs updating ---
-  local oc_ledger="openclaw:${OPENCLAW_VERSION}:${ARCH_SUFFIX}"
-  local hermes_ledger="hermes:${OPENCLAW_VERSION}:${ARCH_SUFFIX}"
   local needs_work=false
 
-  if [[ "$ENABLE_OPENCLAW" == "yes" ]] && ! ledger_contains "$oc_ledger"; then
-    needs_work=true
+  if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
+    local oc_ledger="openclaw:${OPENCLAW_VERSION}:${ARCH_SUFFIX}"
+    if ! ledger_contains "$oc_ledger"; then
+      needs_work=true
+    fi
   fi
-  if [[ "$ENABLE_HERMES" == "yes" ]] && ! ledger_contains "$hermes_ledger"; then
-    needs_work=true
+  if [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]]; then
+    local hermes_ledger="hermes:${HERMES_VERSION}:${ARCH_SUFFIX}"
+    if ! ledger_contains "$hermes_ledger"; then
+      needs_work=true
+    fi
   fi
 
   if [[ "$FORCE" != true && "$needs_work" == false ]]; then
     echo ""
-    echo "==> System is up to date (v$OPENCLAW_VERSION / $ARCH_SUFFIX)"
-    echo "    No update needed. Use --force to re-export."
+    echo "==> No update needed. All versions already exported."
+    [[ "$ENABLE_OPENCLAW" == "yes" ]] && echo "    OpenClaw: v$OPENCLAW_VERSION"
+    [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]] && echo "    Hermes:   v$HERMES_VERSION"
+    echo "    Use --force to re-export."
     echo ""
     return 0
   fi
 
   mkdir -p "$OUTPUT_DIR"
 
-  # --- openclaw ---
+  # --- openclaw: pull from ghcr.io ---
   if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
+    local oc_ledger="openclaw:${OPENCLAW_VERSION}:${ARCH_SUFFIX}"
+
     if [[ "$FORCE" != true ]] && ledger_contains "$oc_ledger"; then
       echo "==> OpenClaw v$OPENCLAW_VERSION already exported, skipping"
     else
-      # clone repo — remove old version first to save space
-      if [[ -d "$SCRIPT_DIR/openclaw" ]]; then
-        local existing_tag=""
-        existing_tag="$(git -C "$SCRIPT_DIR/openclaw" describe --tags --exact-match 2>/dev/null || true)"
-        existing_tag="${existing_tag#v}"
-        if [[ "$existing_tag" == "$OPENCLAW_VERSION" ]]; then
-          echo "==> Repo already at v${OPENCLAW_VERSION}, reusing"
-        else
-          echo "==> Removing old repo (${existing_tag:-unknown}) to save space"
-          rm -rf "$SCRIPT_DIR/openclaw"
-        fi
+      # determine pull tag
+      local oc_pull_tag
+      if [[ "$OPENCLAW_VERSION" == "latest" ]]; then
+        oc_pull_tag="latest"
+      else
+        oc_pull_tag="${OPENCLAW_VERSION}-slim-${ARCH_SUFFIX}"
       fi
-      if [[ ! -d "$SCRIPT_DIR/openclaw" ]]; then
-        echo "==> Cloning openclaw repo v${OPENCLAW_VERSION} (shallow)..."
-        git clone --depth 1 --branch "v${OPENCLAW_VERSION}" \
-          "${OPENCLAW_REPO:-https://github.com/openclaw/openclaw}" "$SCRIPT_DIR/openclaw"
-      fi
+      local oc_pull_image="${OPENCLAW_REGISTRY}:${oc_pull_tag}"
 
-      # build image from inside the repo dir
-      local oc_image="openclaw:local"
-      echo "==> Building openclaw image: $oc_image (platform $ARCH)"
-      echo "    Cached layers are reused - only deltas are pulled"
-      (
-        cd "$SCRIPT_DIR/openclaw"
-        $SAVE_ENGINE build \
-          --progress=plain \
-          --platform "$ARCH" \
-          ${OPENCLAW_BUILD_ARGS:-} \
-          -t "$oc_image" \
-          -f Dockerfile \
-          .
-      )
+      echo "==> Pulling openclaw: $oc_pull_image (platform $ARCH)"
+      $SAVE_ENGINE pull --platform "$ARCH" "$oc_pull_image"
+
+      # tag as openclaw:local for airgapped setup.sh
+      $SAVE_ENGINE tag "$oc_pull_image" "openclaw:local"
 
       # save image
-      echo "==> Saving openclaw image -> $OPENCLAW_IMAGE_FILE"
-      $SAVE_ENGINE save "$oc_image" | gzip > "$OUTPUT_DIR/$OPENCLAW_IMAGE_FILE"
+      local oc_file
+      oc_file="$(oc_image_file)"
+      echo "==> Saving openclaw image -> $oc_file"
+      $SAVE_ENGINE save "openclaw:local" | gzip > "$OUTPUT_DIR/$oc_file"
 
-      # compress repo
-      echo "==> Compressing repo -> $OPENCLAW_REPO_FILE"
-      tar -czf "$OUTPUT_DIR/$OPENCLAW_REPO_FILE" -C "$SCRIPT_DIR" openclaw/
+      # clone repo for setup scripts (shallow, remove old if different version)
+      if [[ "$OPENCLAW_VERSION" != "latest" ]]; then
+        if [[ -d "$SCRIPT_DIR/openclaw" ]]; then
+          local existing_tag=""
+          existing_tag="$(git -C "$SCRIPT_DIR/openclaw" describe --tags --exact-match 2>/dev/null || true)"
+          existing_tag="${existing_tag#v}"
+          if [[ "$existing_tag" == "$OPENCLAW_VERSION" ]]; then
+            echo "==> Repo already at v${OPENCLAW_VERSION}, reusing"
+          else
+            echo "==> Removing old repo (${existing_tag:-unknown}) to save space"
+            rm -rf "$SCRIPT_DIR/openclaw"
+          fi
+        fi
+        if [[ ! -d "$SCRIPT_DIR/openclaw" ]]; then
+          echo "==> Cloning openclaw repo v${OPENCLAW_VERSION} (shallow)..."
+          git clone --depth 1 --branch "v${OPENCLAW_VERSION}" \
+            "${OPENCLAW_REPO:-https://github.com/openclaw/openclaw}" "$SCRIPT_DIR/openclaw"
+        fi
+
+        local oc_repo
+        oc_repo="$(oc_repo_file)"
+        echo "==> Compressing repo -> $oc_repo"
+        tar -czf "$OUTPUT_DIR/$oc_repo" -C "$SCRIPT_DIR" openclaw/
+      fi
 
       ledger_add "$oc_ledger"
     fi
@@ -397,34 +512,49 @@ do_save() {
     echo "==> OpenClaw: disabled, skipping"
   fi
 
-  # --- hermes ---
-  if [[ "$ENABLE_HERMES" == "yes" ]]; then
+  # --- hermes: pull from docker.io ---
+  if [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]]; then
+    local hermes_ledger="hermes:${HERMES_VERSION}:${ARCH_SUFFIX}"
+
     if [[ "$FORCE" != true ]] && ledger_contains "$hermes_ledger"; then
-      echo "==> Hermes v$OPENCLAW_VERSION already exported, skipping"
+      echo "==> Hermes v$HERMES_VERSION already exported, skipping"
     else
-      if $SAVE_ENGINE image inspect "$HERMES_IMAGE" >/dev/null 2>&1; then
-        echo "==> Saving hermes image ($HERMES_IMAGE) -> $HERMES_IMAGE_FILE"
-        $SAVE_ENGINE save "$HERMES_IMAGE" | gzip > "$OUTPUT_DIR/$HERMES_IMAGE_FILE"
-        ledger_add "$hermes_ledger"
+      local hermes_pull_tag
+      if [[ "$HERMES_VERSION" == "latest" ]]; then
+        hermes_pull_tag="latest"
       else
-        echo "WARNING: Hermes image '$HERMES_IMAGE' not found locally."
-        echo "  Build it first: $SAVE_ENGINE build --platform $ARCH -t $HERMES_IMAGE <hermes-repo-path>"
+        hermes_pull_tag="v${HERMES_VERSION}"
       fi
+      local hermes_pull_image="${HERMES_REGISTRY}:${hermes_pull_tag}"
+
+      echo "==> Pulling hermes: $hermes_pull_image (platform $ARCH)"
+      $SAVE_ENGINE pull --platform "$ARCH" "$hermes_pull_image"
+
+      local hermes_file
+      hermes_file="$(hermes_image_file)"
+      echo "==> Saving hermes image -> $hermes_file"
+      $SAVE_ENGINE save "$hermes_pull_image" | gzip > "$OUTPUT_DIR/$hermes_file"
+
+      ledger_add "$hermes_ledger"
     fi
   else
-    echo "==> Hermes Agent: disabled, skipping"
+    [[ "$ENABLE_HERMES" == "yes" ]] && echo "==> Hermes: could not determine version, skipping"
+    [[ "$ENABLE_HERMES" != "yes" ]] && echo "==> Hermes Agent: disabled, skipping"
   fi
+
+  # QEMU hint (non-fatal for pull, but good to know)
+  check_qemu
 
   echo ""
   echo "==> Done. Output files:"
   ls -lh "$OUTPUT_DIR/"*.tar.gz 2>/dev/null || echo "  (none)"
   echo ""
   echo "Transfer files to the airgapped machine, then run:"
-  echo "  ./airgapped.sh --load --arch $ARCH --openclaw-version $OPENCLAW_VERSION"
+  echo "  ./airgapped.sh --load --arch $ARCH"
 }
 
 # ============================================================
-#  --load: airgapped machine (docker)
+#  --load: airgapped machine
 # ============================================================
 do_load() {
   find_file() {
@@ -438,60 +568,74 @@ do_load() {
 
   # --- openclaw ---
   if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
-    local oc_image_tar oc_repo_tar
-    oc_image_tar="$(find_file "$OPENCLAW_IMAGE_FILE")"
-    oc_repo_tar="$(find_file "$OPENCLAW_REPO_FILE")"
+    local deployed_oc
+    deployed_oc="$(get_deployed_version "openclaw")"
 
-    # load image
-    if $LOAD_ENGINE image inspect "openclaw:local" >/dev/null 2>&1; then
-      echo "==> openclaw:local already loaded, skipping"
-    elif [[ -n "$oc_image_tar" && -f "$oc_image_tar" ]]; then
-      echo "==> Loading openclaw image from $oc_image_tar"
-      gunzip -c "$oc_image_tar" | $LOAD_ENGINE load
+    if [[ -n "$deployed_oc" && "$deployed_oc" == "$OPENCLAW_VERSION" && "$FORCE" != true ]]; then
+      echo "==> OpenClaw v$OPENCLAW_VERSION already deployed, no update needed"
     else
-      echo "ERROR: OpenClaw image tar not found and openclaw:local not present" >&2
-      echo "  Expected: $OPENCLAW_IMAGE_FILE" >&2
-      exit 1
-    fi
+      local oc_image_tar oc_repo_tar
+      oc_image_tar="$(find_file "openclaw_${ARCH_SUFFIX}_v${OPENCLAW_VERSION}.tar.gz")"
+      oc_repo_tar="$(find_file "openclaw_github_v${OPENCLAW_VERSION}.tar.gz")"
 
-    # extract repo
-    if [[ ! -d "$SCRIPT_DIR/openclaw" ]]; then
-      if [[ -n "$oc_repo_tar" && -f "$oc_repo_tar" ]]; then
-        echo "==> Extracting repo from $oc_repo_tar"
-        tar -xzf "$oc_repo_tar" -C "$SCRIPT_DIR"
+      # load image
+      if [[ -n "$oc_image_tar" && -f "$oc_image_tar" ]]; then
+        echo "==> Loading openclaw image from $oc_image_tar"
+        gunzip -c "$oc_image_tar" | $LOAD_ENGINE load
+      elif $LOAD_ENGINE image inspect "openclaw:local" >/dev/null 2>&1; then
+        echo "==> openclaw:local already present in engine"
       else
-        echo "ERROR: No repo tar and no openclaw/ directory" >&2
+        echo "ERROR: No openclaw image tar found and openclaw:local not in engine" >&2
         exit 1
       fi
-    else
-      echo "==> Repo directory exists at $SCRIPT_DIR/openclaw"
-    fi
 
-    # patch setup.sh
-    patch_setup
+      # extract repo
+      if [[ ! -d "$SCRIPT_DIR/openclaw" ]]; then
+        if [[ -n "$oc_repo_tar" && -f "$oc_repo_tar" ]]; then
+          echo "==> Extracting repo from $oc_repo_tar"
+          tar -xzf "$oc_repo_tar" -C "$SCRIPT_DIR"
+        else
+          echo "ERROR: No repo tar and no openclaw/ directory" >&2
+          exit 1
+        fi
+      else
+        echo "==> Repo directory exists at $SCRIPT_DIR/openclaw"
+      fi
+
+      # patch setup.sh
+      patch_setup
+
+      set_deployed_version "openclaw" "$OPENCLAW_VERSION"
+    fi
   else
     echo "==> OpenClaw: disabled, skipping"
   fi
 
   # --- hermes ---
-  if [[ "$ENABLE_HERMES" == "yes" ]]; then
-    local hermes_tar
-    hermes_tar="$(find_file "hermes_${ARCH_SUFFIX}_*.tar.gz")"
+  if [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]]; then
+    local deployed_hermes
+    deployed_hermes="$(get_deployed_version "hermes")"
 
-    if $LOAD_ENGINE image inspect "$HERMES_IMAGE" >/dev/null 2>&1; then
-      echo "==> Hermes image already loaded, skipping"
-    elif [[ -n "$hermes_tar" && -f "$hermes_tar" ]]; then
-      echo "==> Loading hermes image from $hermes_tar"
-      gunzip -c "$hermes_tar" | $LOAD_ENGINE load
+    if [[ -n "$deployed_hermes" && "$deployed_hermes" == "$HERMES_VERSION" && "$FORCE" != true ]]; then
+      echo "==> Hermes v$HERMES_VERSION already deployed, no update needed"
     else
-      echo "WARNING: No hermes image tar found, skipping"
+      local hermes_tar
+      hermes_tar="$(find_file "hermes_${ARCH_SUFFIX}_v${HERMES_VERSION}.tar.gz")"
+
+      if [[ -n "$hermes_tar" && -f "$hermes_tar" ]]; then
+        echo "==> Loading hermes image from $hermes_tar"
+        gunzip -c "$hermes_tar" | $LOAD_ENGINE load
+        set_deployed_version "hermes" "$HERMES_VERSION"
+      else
+        echo "WARNING: No hermes image tar found (expected hermes_${ARCH_SUFFIX}_v${HERMES_VERSION}.tar.gz)"
+      fi
     fi
   else
     echo "==> Hermes Agent: disabled, skipping"
   fi
 
   echo ""
-  echo "==> Images loaded:"
+  echo "==> Images in engine:"
   $LOAD_ENGINE images | grep -E "(openclaw|hermes)" || true
 
   if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
