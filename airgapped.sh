@@ -25,6 +25,7 @@ LOAD_ENGINE="${LOAD_ENGINE:-docker}"
 # --- registries ---
 OPENCLAW_REGISTRY="${OPENCLAW_REGISTRY:-ghcr.io/openclaw/openclaw}"
 HERMES_REGISTRY="${HERMES_REGISTRY:-docker.io/nousresearch/hermes-agent}"
+OPENCLAW_REPO="${OPENCLAW_REPO:-https://github.com/openclaw/openclaw}"
 
 usage() {
   cat <<EOF
@@ -799,9 +800,40 @@ do_load() {
 # ============================================================
 #  Patch setup.sh for airgapped deployment
 # ============================================================
+ensure_openclaw_repo_for_patch() {
+  local repo_dir="$SCRIPT_DIR/openclaw"
+  local desired_ref="main"
+
+  if [[ -n "${OPENCLAW_VERSION:-}" && "${OPENCLAW_VERSION}" != "latest" ]]; then
+    desired_ref="v${OPENCLAW_VERSION}"
+  fi
+
+  if [[ ! -d "$repo_dir" ]]; then
+    echo "==> openclaw/ not found, cloning ${OPENCLAW_REPO} (${desired_ref})"
+    if ! git clone --depth 1 --branch "$desired_ref" "$OPENCLAW_REPO" "$repo_dir"; then
+      if [[ "$desired_ref" != "main" ]]; then
+        echo "==> Clone for ${desired_ref} failed, retrying main"
+        if [[ -d "$repo_dir/.git" ]]; then
+          git -C "$repo_dir" fetch --depth 1 origin main
+          git -C "$repo_dir" checkout -B main origin/main
+        else
+          echo "ERROR: Could not clone openclaw repository. Partial directory at $repo_dir" >&2
+          echo "  Remove that directory manually and retry." >&2
+          exit 1
+        fi
+      else
+        exit 1
+      fi
+    fi
+  fi
+}
+
 patch_setup() {
-  local setup_file="$SCRIPT_DIR/openclaw/scripts/docker/setup.sh"
+  local repo_dir="$SCRIPT_DIR/openclaw"
+  local setup_file="$repo_dir/scripts/docker/setup.sh"
   local patch_file="$SCRIPT_DIR/patches/openclaw-setup-airgap.patch"
+
+  ensure_openclaw_repo_for_patch
 
   if [[ ! -f "$setup_file" ]]; then
     echo "ERROR: setup.sh not found at $setup_file" >&2
@@ -821,18 +853,24 @@ patch_setup() {
   echo "==> Patching setup.sh with $patch_file"
   cp "$setup_file" "${setup_file}.bak"
 
-  if patch --forward --directory="$SCRIPT_DIR/openclaw" -p1 < "$patch_file"; then
+  if patch --forward --directory="$repo_dir" -p1 < "$patch_file"; then
     echo "  Patched successfully"
     return
   fi
 
   echo "==> Retrying patch with fuzzy context matching (-F3)"
-  if patch --forward --fuzz=3 --directory="$SCRIPT_DIR/openclaw" -p1 < "$patch_file"; then
+  if patch --forward --fuzz=3 --directory="$repo_dir" -p1 < "$patch_file"; then
     echo "  Patched successfully (fuzzy match)"
     return
   fi
 
-  echo "ERROR: Patch failed. setup.sh may have changed upstream." >&2
+  if patch --reverse --dry-run --directory="$repo_dir" -p1 < "$patch_file" >/dev/null 2>&1; then
+    echo "==> setup.sh already patched"
+    cp "${setup_file}.bak" "$setup_file"
+    return
+  fi
+
+  echo "ERROR: Patch failed. New upstream version?" >&2
   echo "  Backup at: ${setup_file}.bak" >&2
   echo "  Patch file: $patch_file" >&2
   cp "${setup_file}.bak" "$setup_file"
