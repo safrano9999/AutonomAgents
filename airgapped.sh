@@ -31,7 +31,7 @@ Modes:
 
 Options:
   --arch ARCH                Platform, e.g. linux/arm64 or linux/amd64
-  --openclaw-version VER     OpenClaw version, e.g. 2026.4.26
+  --openclaw-version VER     OpenClaw version (optional for --save: auto-detects latest major release)
   --hermes-image IMAGE       Hermes image name (default: $HERMES_IMAGE)
   --force                    Re-export even if version already in ledger
   --reconfigure              Re-run component selection dialog
@@ -40,6 +40,10 @@ Config: $CONF_FILE
 Ledger: $LEDGER_FILE (tracks exported version:arch to prevent duplicates)
 
 Examples:
+  # Auto-detect latest release:
+  ./airgapped.sh --save --arch linux/arm64
+
+  # Pin specific version:
   ./airgapped.sh --save --arch linux/arm64 --openclaw-version 2026.4.26
   ./airgapped.sh --load --arch linux/arm64 --openclaw-version 2026.4.26
 EOF
@@ -65,10 +69,62 @@ done
 
 [[ -z "$MODE" ]] && { echo "ERROR: --save or --load required" >&2; usage; }
 [[ -z "$ARCH" ]] && { echo "ERROR: --arch required (e.g. linux/arm64)" >&2; usage; }
-[[ -z "$OPENCLAW_VERSION" ]] && { echo "ERROR: --openclaw-version required" >&2; usage; }
 
 # linux/arm64 -> arm64
 ARCH_SUFFIX="${ARCH#*/}"
+
+# ============================================================
+#  Auto-detect latest major release from GitHub
+# ============================================================
+fetch_latest_version() {
+  local repo="${OPENCLAW_REPO:-https://github.com/openclaw/openclaw}"
+  # extract owner/repo from URL
+  local owner_repo
+  owner_repo="$(echo "$repo" | sed 's|.*github\.com/||; s|\.git$||')"
+
+  echo "==> Checking latest release from $owner_repo..." >&2
+
+  local releases_json
+  if ! releases_json="$(gh api "repos/$owner_repo/releases" \
+    --jq '[.[] | select(.prerelease == false and (.tag_name | test("beta|alpha|rc") | not)) | .tag_name] | first' \
+    2>/dev/null)"; then
+    # fallback: try curl if gh is not available
+    if ! releases_json="$(curl -sf "https://api.github.com/repos/$owner_repo/releases" \
+      | python3 -c "
+import sys, json
+releases = json.load(sys.stdin)
+for r in releases:
+    tag = r['tag_name']
+    if not r['prerelease'] and not any(x in tag for x in ['beta','alpha','rc']):
+        print(tag)
+        break
+" 2>/dev/null)"; then
+      echo "ERROR: Could not fetch releases from GitHub. Specify --openclaw-version manually." >&2
+      exit 1
+    fi
+  fi
+
+  # strip leading 'v' if present: v2026.4.26 -> 2026.4.26
+  releases_json="${releases_json#v}"
+
+  if [[ -z "$releases_json" ]]; then
+    echo "ERROR: No stable release found. Specify --openclaw-version manually." >&2
+    exit 1
+  fi
+
+  echo "$releases_json"
+}
+
+# auto-detect version for --save if not specified
+if [[ -z "$OPENCLAW_VERSION" ]]; then
+  if [[ "$MODE" == "save" ]]; then
+    OPENCLAW_VERSION="$(fetch_latest_version)"
+    echo "==> Latest major release: v$OPENCLAW_VERSION"
+  else
+    echo "ERROR: --openclaw-version required for --load (no internet on airgapped machine)" >&2
+    usage
+  fi
+fi
 
 # ============================================================
 #  Interactive setup dialog
@@ -230,14 +286,33 @@ ledger_add() {
 # ============================================================
 do_save() {
   check_qemu
+
+  # --- check if anything needs updating ---
+  local oc_ledger="openclaw:${OPENCLAW_VERSION}:${ARCH_SUFFIX}"
+  local hermes_ledger="hermes:${OPENCLAW_VERSION}:${ARCH_SUFFIX}"
+  local needs_work=false
+
+  if [[ "$ENABLE_OPENCLAW" == "yes" ]] && ! ledger_contains "$oc_ledger"; then
+    needs_work=true
+  fi
+  if [[ "$ENABLE_HERMES" == "yes" ]] && ! ledger_contains "$hermes_ledger"; then
+    needs_work=true
+  fi
+
+  if [[ "$FORCE" != true && "$needs_work" == false ]]; then
+    echo ""
+    echo "==> System is up to date (v$OPENCLAW_VERSION / $ARCH_SUFFIX)"
+    echo "    No update needed. Use --force to re-export."
+    echo ""
+    return 0
+  fi
+
   mkdir -p "$OUTPUT_DIR"
 
   # --- openclaw ---
   if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
-    local oc_ledger="openclaw:${OPENCLAW_VERSION}:${ARCH_SUFFIX}"
-
     if [[ "$FORCE" != true ]] && ledger_contains "$oc_ledger"; then
-      echo "==> OpenClaw already exported: $oc_ledger (use --force to redo)"
+      echo "==> OpenClaw v$OPENCLAW_VERSION already exported, skipping"
     else
       # clone repo
       if [[ ! -d "$SCRIPT_DIR/openclaw" ]]; then
@@ -275,10 +350,8 @@ do_save() {
 
   # --- hermes ---
   if [[ "$ENABLE_HERMES" == "yes" ]]; then
-    local hermes_ledger="hermes:${OPENCLAW_VERSION}:${ARCH_SUFFIX}"
-
     if [[ "$FORCE" != true ]] && ledger_contains "$hermes_ledger"; then
-      echo "==> Hermes already exported: $hermes_ledger (use --force to redo)"
+      echo "==> Hermes v$OPENCLAW_VERSION already exported, skipping"
     else
       if $SAVE_ENGINE image inspect "$HERMES_IMAGE" >/dev/null 2>&1; then
         echo "==> Saving hermes image ($HERMES_IMAGE) -> $HERMES_IMAGE_FILE"
