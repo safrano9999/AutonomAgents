@@ -28,11 +28,12 @@ HERMES_REGISTRY="${HERMES_REGISTRY:-docker.io/nousresearch/hermes-agent}"
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") --save|--load [options]
+Usage: $(basename "$0") --save|--load|--patch [options]
 
 Modes:
   --save       Pull images from registry and save (connected machine)
   --load       Load images and patch setup (airgapped machine)
+  --patch      Only patch openclaw/scripts/docker/setup.sh
 
 Options:
   --arch ARCH                Platform, e.g. linux/arm64 or linux/amd64
@@ -54,6 +55,9 @@ Examples:
   # Pin specific versions:
   ./airgapped.sh --save --arch linux/arm64 --openclaw-version 2026.4.26 --hermes-version v2026.4.23
   ./airgapped.sh --load --arch linux/arm64 --openclaw-version 2026.4.26
+
+  # Only patch setup script in local openclaw/ checkout:
+  ./airgapped.sh --patch
 EOF
   exit 1
 }
@@ -65,6 +69,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --save) MODE="save"; shift ;;
     --load) MODE="load"; shift ;;
+    --patch) MODE="patch"; shift ;;
     --arch) ARCH="$2"; shift 2 ;;
     --openclaw-version) OPENCLAW_VERSION="$2"; shift 2 ;;
     --hermes-version) HERMES_VERSION="$2"; shift 2 ;;
@@ -75,19 +80,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -z "$MODE" ]] && { echo "ERROR: --save or --load required" >&2; usage; }
-[[ -z "$ARCH" ]] && { echo "ERROR: --arch required (e.g. linux/arm64)" >&2; usage; }
+[[ -z "$MODE" ]] && { echo "ERROR: --save, --load or --patch required" >&2; usage; }
 
-# linux/arm64 -> arm64
-ARCH_SUFFIX="${ARCH#*/}"
+ARCH_SUFFIX=""
+if [[ "$MODE" == "save" || "$MODE" == "load" ]]; then
+  [[ -z "$ARCH" ]] && { echo "ERROR: --arch required (e.g. linux/arm64)" >&2; usage; }
 
-# --- validate architecture ---
-VALID_ARCHS="amd64 arm64 arm s390x ppc64le riscv64"
-if ! echo "$VALID_ARCHS" | grep -qw "$ARCH_SUFFIX"; then
-  echo "ERROR: Invalid architecture '$ARCH_SUFFIX'" >&2
-  echo "  Valid: $VALID_ARCHS" >&2
-  echo "  Example: --arch linux/arm64" >&2
-  exit 1
+  # linux/arm64 -> arm64
+  ARCH_SUFFIX="${ARCH#*/}"
+
+  # --- validate architecture ---
+  VALID_ARCHS="amd64 arm64 arm s390x ppc64le riscv64"
+  if ! echo "$VALID_ARCHS" | grep -qw "$ARCH_SUFFIX"; then
+    echo "ERROR: Invalid architecture '$ARCH_SUFFIX'" >&2
+    echo "  Valid: $VALID_ARCHS" >&2
+    echo "  Example: --arch linux/arm64" >&2
+    exit 1
+  fi
 fi
 
 # ============================================================
@@ -317,21 +326,23 @@ needs_setup() {
   return 1
 }
 
-if needs_setup; then
-  run_setup_dialog
-fi
+if [[ "$MODE" != "patch" ]]; then
+  if needs_setup; then
+    run_setup_dialog
+  fi
 
-# ============================================================
-#  Resolve versions (after setup dialog, before file names)
-# ============================================================
-if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
-  OPENCLAW_VERSION="$(resolve_openclaw_version)"
-  echo "==> OpenClaw version: $OPENCLAW_VERSION"
-fi
+  # ============================================================
+  #  Resolve versions (after setup dialog, before file names)
+  # ============================================================
+  if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
+    OPENCLAW_VERSION="$(resolve_openclaw_version)"
+    echo "==> OpenClaw version: $OPENCLAW_VERSION"
+  fi
 
-if [[ "$ENABLE_HERMES" == "yes" ]]; then
-  HERMES_VERSION="$(resolve_hermes_version)"
-  [[ -n "$HERMES_VERSION" ]] && echo "==> Hermes version: $HERMES_VERSION"
+  if [[ "$ENABLE_HERMES" == "yes" ]]; then
+    HERMES_VERSION="$(resolve_hermes_version)"
+    [[ -n "$HERMES_VERSION" ]] && echo "==> Hermes version: $HERMES_VERSION"
+  fi
 fi
 
 # ============================================================
@@ -419,6 +430,141 @@ set_deployed_version() {
     sed -i "/^${component}:${ARCH_SUFFIX}:/d" "$DEPLOYED_FILE"
   fi
   echo "${component}:${ARCH_SUFFIX}:${version}" >> "$DEPLOYED_FILE"
+}
+
+cleanup_remove_image_refs() {
+  local engine="$1"
+  shift
+  local removed=0
+  local ref
+  for ref in "$@"; do
+    [[ -n "$ref" ]] || continue
+    if "$engine" image inspect "$ref" >/dev/null 2>&1; then
+      if "$engine" rmi -f "$ref" >/dev/null 2>&1; then
+        echo "  removed: $ref"
+        removed=$((removed + 1))
+      fi
+    fi
+  done
+  echo "  total removed images: $removed"
+}
+
+cleanup_collect_candidate_refs() {
+  local engine="$1"
+  "$engine" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
+    | awk '!seen[$0]++' \
+    | sed '/^<none>:<none>$/d'
+}
+
+cleanup_prune_layers_for_load() {
+  local engine="$1"
+  echo "==> Pruning builder cache layers (${engine} builder prune --filter type=exec.cachemount)"
+  if "$engine" builder prune -f --filter type=exec.cachemount >/dev/null 2>&1; then
+    echo "  builder cache pruned (exec.cachemount)"
+    return
+  fi
+
+  echo "  exec.cachemount filter not supported, fallback to dangling image prune"
+  "$engine" image prune -f >/dev/null 2>&1 || true
+}
+
+offer_cleanup_after_save() {
+  local engine="$SAVE_ENGINE"
+  if [[ ! -t 0 ]]; then
+    echo ""
+    echo "==> Cleanup option skipped (non-interactive shell)"
+    return
+  fi
+
+  echo ""
+  local answer
+  answer="$(ask_yes_no "Cleanup now? Remove local OpenClaw/Hermes images and dangling layers on this machine? [yes/no]:" "no")"
+  if [[ "$answer" != "yes" ]]; then
+    echo "==> Cleanup skipped"
+    return
+  fi
+
+  local -a refs_to_remove=()
+  local ref
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    case "$ref" in
+      openclaw:local|${OPENCLAW_REGISTRY}:*|ghcr.io/openclaw/openclaw:*|openclaw/openclaw:*|${HERMES_REGISTRY}:*|${HERMES_REGISTRY#docker.io/}:*|nousresearch/hermes-agent:*)
+        refs_to_remove+=("$ref")
+        ;;
+    esac
+  done < <(cleanup_collect_candidate_refs "$engine")
+
+  echo "==> Cleanup (${engine}): removing OpenClaw/Hermes images"
+  cleanup_remove_image_refs "$engine" "${refs_to_remove[@]}"
+
+  echo "==> Pruning dangling image layers"
+  "$engine" image prune -f >/dev/null 2>&1 || true
+}
+
+offer_cleanup_after_load() {
+  local engine="$LOAD_ENGINE"
+  if [[ ! -t 0 ]]; then
+    echo ""
+    echo "==> Cleanup option skipped (non-interactive shell)"
+    return
+  fi
+
+  echo ""
+  local answer
+  answer="$(ask_yes_no "Cleanup legacy now? Remove old redundant OpenClaw/Hermes images (keep current) and prune legacy layers? [yes/no]:" "no")"
+  if [[ "$answer" != "yes" ]]; then
+    echo "==> Cleanup skipped"
+    return
+  fi
+
+  local keep_openclaw=""
+  local keep_hermes_full=""
+  local keep_hermes_short=""
+  if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
+    keep_openclaw="openclaw:local"
+  fi
+  if [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]]; then
+    local hermes_tag
+    if [[ "$HERMES_VERSION" == "latest" ]]; then
+      hermes_tag="latest"
+    else
+      hermes_tag="v${HERMES_VERSION}"
+    fi
+    keep_hermes_full="${HERMES_REGISTRY}:${hermes_tag}"
+    keep_hermes_short="${HERMES_REGISTRY#docker.io/}:${hermes_tag}"
+  fi
+
+  local -a refs_to_remove=()
+  local ref
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+
+    case "$ref" in
+      openclaw:local|${OPENCLAW_REGISTRY}:*|ghcr.io/openclaw/openclaw:*|openclaw/openclaw:*|${HERMES_REGISTRY}:*|${HERMES_REGISTRY#docker.io/}:*|nousresearch/hermes-agent:*)
+        ;;
+      *)
+        continue
+        ;;
+    esac
+
+    if [[ -n "$keep_openclaw" && "$ref" == "$keep_openclaw" ]]; then
+      continue
+    fi
+    if [[ -n "$keep_hermes_full" && "$ref" == "$keep_hermes_full" ]]; then
+      continue
+    fi
+    if [[ -n "$keep_hermes_short" && "$ref" == "$keep_hermes_short" ]]; then
+      continue
+    fi
+
+    refs_to_remove+=("$ref")
+  done < <(cleanup_collect_candidate_refs "$engine")
+
+  echo "==> Cleanup (${engine}): removing legacy OpenClaw/Hermes images"
+  cleanup_remove_image_refs "$engine" "${refs_to_remove[@]}"
+
+  cleanup_prune_layers_for_load "$engine"
 }
 
 # ============================================================
@@ -551,6 +697,8 @@ do_save() {
   echo ""
   echo "Transfer files to the airgapped machine, then run:"
   echo "  ./airgapped.sh --load --arch $ARCH"
+
+  offer_cleanup_after_save
 }
 
 # ============================================================
@@ -644,6 +792,8 @@ do_load() {
     echo "  cd $SCRIPT_DIR/openclaw"
     echo "  OPENCLAW_IMAGE=openclaw:local bash scripts/docker/setup.sh"
   fi
+
+  offer_cleanup_after_load
 }
 
 # ============================================================
@@ -663,7 +813,7 @@ patch_setup() {
     exit 1
   fi
 
-  if grep -q 'already exists locally, skipping' "$setup_file" 2>/dev/null; then
+  if grep -Eq 'offline mode, skipping build|already exists locally, skipping build' "$setup_file" 2>/dev/null; then
     echo "==> setup.sh already patched"
     return
   fi
@@ -671,15 +821,22 @@ patch_setup() {
   echo "==> Patching setup.sh with $patch_file"
   cp "$setup_file" "${setup_file}.bak"
 
-  if ! patch --forward --directory="$SCRIPT_DIR/openclaw" -p1 < "$patch_file"; then
-    echo "ERROR: Patch failed. setup.sh may have changed upstream." >&2
-    echo "  Backup at: ${setup_file}.bak" >&2
-    echo "  Patch file: $patch_file" >&2
-    cp "${setup_file}.bak" "$setup_file"
-    exit 1
+  if patch --forward --directory="$SCRIPT_DIR/openclaw" -p1 < "$patch_file"; then
+    echo "  Patched successfully"
+    return
   fi
 
-  echo "  Patched successfully"
+  echo "==> Retrying patch with fuzzy context matching (-F3)"
+  if patch --forward --fuzz=3 --directory="$SCRIPT_DIR/openclaw" -p1 < "$patch_file"; then
+    echo "  Patched successfully (fuzzy match)"
+    return
+  fi
+
+  echo "ERROR: Patch failed. setup.sh may have changed upstream." >&2
+  echo "  Backup at: ${setup_file}.bak" >&2
+  echo "  Patch file: $patch_file" >&2
+  cp "${setup_file}.bak" "$setup_file"
+  exit 1
 }
 
 # ============================================================
@@ -688,4 +845,7 @@ patch_setup() {
 case "$MODE" in
   save) do_save ;;
   load) do_load ;;
+  patch)
+    patch_setup
+    ;;
 esac
