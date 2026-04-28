@@ -73,6 +73,15 @@ done
 # linux/arm64 -> arm64
 ARCH_SUFFIX="${ARCH#*/}"
 
+# --- validate architecture ---
+VALID_ARCHS="amd64 arm64 arm s390x ppc64le riscv64"
+if ! echo "$VALID_ARCHS" | grep -qw "$ARCH_SUFFIX"; then
+  echo "ERROR: Invalid architecture '$ARCH_SUFFIX'" >&2
+  echo "  Valid: $VALID_ARCHS" >&2
+  echo "  Example: --arch linux/arm64" >&2
+  exit 1
+fi
+
 # ============================================================
 #  Auto-detect latest major release from GitHub
 # ============================================================
@@ -170,6 +179,25 @@ LOAD_ENGINE="$LOAD_ENGINE"
 EOF
 }
 
+ask_choice() {
+  local prompt="$1"
+  shift
+  local options=("$@")
+  local reply
+  while true; do
+    echo "$prompt"
+    for i in "${!options[@]}"; do
+      echo "  $((i+1))) ${options[$i]}"
+    done
+    read -rp "Choice [1-${#options[@]}]: " reply
+    if [[ "$reply" =~ ^[0-9]+$ ]] && (( reply >= 1 && reply <= ${#options[@]} )); then
+      echo "${options[$((reply-1))]}"
+      return
+    fi
+    echo "  Invalid choice."
+  done
+}
+
 run_setup_dialog() {
   echo ""
   echo "======================================"
@@ -185,7 +213,6 @@ run_setup_dialog() {
     echo "  No components selected. Config not saved."
     echo "  You will be asked again on the next run."
     echo ""
-    # remove stale config entries so dialog triggers again
     if [[ -f "$CONF_FILE" ]]; then
       sed -i '/^ENABLE_OPENCLAW=/d; /^ENABLE_HERMES=/d' "$CONF_FILE"
     fi
@@ -193,8 +220,17 @@ run_setup_dialog() {
   fi
 
   echo ""
-  echo "  Hermes Agent: $ENABLE_HERMES"
-  echo "  OpenClaw:     $ENABLE_OPENCLAW"
+  echo "Container engine for building/saving (this machine):"
+  SAVE_ENGINE="$(ask_choice "" "podman" "docker")"
+
+  echo "Container engine for loading/deploying (airgapped machine):"
+  LOAD_ENGINE="$(ask_choice "" "podman" "docker")"
+
+  echo ""
+  echo "  Hermes Agent:    $ENABLE_HERMES"
+  echo "  OpenClaw:        $ENABLE_OPENCLAW"
+  echo "  Build engine:    $SAVE_ENGINE"
+  echo "  Deploy engine:   $LOAD_ENGINE"
   echo ""
 
   write_config
@@ -332,16 +368,20 @@ do_save() {
           "${OPENCLAW_REPO:-https://github.com/openclaw/openclaw}" "$SCRIPT_DIR/openclaw"
       fi
 
-      # build image
+      # build image from inside the repo dir
       local oc_image="openclaw:local"
       echo "==> Building openclaw image: $oc_image (platform $ARCH)"
       echo "    Cached layers are reused - only deltas are pulled"
-      $SAVE_ENGINE build \
-        --platform "$ARCH" \
-        ${OPENCLAW_BUILD_ARGS:-} \
-        -t "$oc_image" \
-        -f "$SCRIPT_DIR/openclaw/Dockerfile" \
-        "$SCRIPT_DIR/openclaw"
+      (
+        cd "$SCRIPT_DIR/openclaw"
+        $SAVE_ENGINE build \
+          --progress=plain \
+          --platform "$ARCH" \
+          ${OPENCLAW_BUILD_ARGS:-} \
+          -t "$oc_image" \
+          -f Dockerfile \
+          .
+      )
 
       # save image
       echo "==> Saving openclaw image -> $OPENCLAW_IMAGE_FILE"
