@@ -314,13 +314,22 @@ do_save() {
     if [[ "$FORCE" != true ]] && ledger_contains "$oc_ledger"; then
       echo "==> OpenClaw v$OPENCLAW_VERSION already exported, skipping"
     else
-      # clone repo
+      # clone repo — remove old version first to save space
+      if [[ -d "$SCRIPT_DIR/openclaw" ]]; then
+        local existing_tag=""
+        existing_tag="$(git -C "$SCRIPT_DIR/openclaw" describe --tags --exact-match 2>/dev/null || true)"
+        existing_tag="${existing_tag#v}"
+        if [[ "$existing_tag" == "$OPENCLAW_VERSION" ]]; then
+          echo "==> Repo already at v${OPENCLAW_VERSION}, reusing"
+        else
+          echo "==> Removing old repo (${existing_tag:-unknown}) to save space"
+          rm -rf "$SCRIPT_DIR/openclaw"
+        fi
+      fi
       if [[ ! -d "$SCRIPT_DIR/openclaw" ]]; then
-        echo "==> Cloning openclaw repo v${OPENCLAW_VERSION}..."
+        echo "==> Cloning openclaw repo v${OPENCLAW_VERSION} (shallow)..."
         git clone --depth 1 --branch "v${OPENCLAW_VERSION}" \
           "${OPENCLAW_REPO:-https://github.com/openclaw/openclaw}" "$SCRIPT_DIR/openclaw"
-      else
-        echo "==> Repo already at $SCRIPT_DIR/openclaw, reusing"
       fi
 
       # build image
