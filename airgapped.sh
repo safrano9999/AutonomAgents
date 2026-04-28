@@ -159,7 +159,7 @@ detect_version_from_archives() {
   local latest=""
   local f
   for dir in "$OUTPUT_DIR" "$PWD" "$SCRIPT_DIR"; do
-    for f in "$dir"/${prefix}_${ARCH_SUFFIX}_v*.tar.gz 2>/dev/null; do
+    for f in "$dir"/${prefix}_${ARCH_SUFFIX}_v*.tar.gz; do
       [[ -f "$f" ]] || continue
       local base ver
       base="$(basename "$f")"
