@@ -1,7 +1,7 @@
 --- a/scripts/docker/setup.sh
 +++ b/scripts/docker/setup.sh
-@@ -492,14 +492,14 @@
-   OPENCLAW_OTEL_PRELOADED
+@@ -499,14 +499,14 @@
+   OPENCLAW_SKIP_ONBOARDING
  
  if [[ "$IMAGE_NAME" == "openclaw:local" ]]; then
 -  echo "==> Building Docker image: $IMAGE_NAME"
@@ -23,3 +23,12 @@
  else
    echo "==> Pulling Docker image: $IMAGE_NAME"
    if ! docker pull "$IMAGE_NAME"; then
+@@ -569,7 +569,7 @@
+ 
+ echo ""
+ echo "==> Starting gateway"
+-docker compose "${COMPOSE_ARGS[@]}" up -d openclaw-gateway
++docker compose "${COMPOSE_ARGS[@]}" up -d --force-recreate openclaw-gateway
+ 
+ # --- Sandbox setup (opt-in via OPENCLAW_SANDBOX=1) ---
+ if [[ -n "$SANDBOX_ENABLED" ]]; then
