@@ -14,7 +14,6 @@ MODE=""
 ARCH=""
 OPENCLAW_VERSION=""
 HERMES_VERSION=""
-FORCE=false
 RUN_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 
 SAVE_ENGINE="${SAVE_ENGINE:-docker}"
@@ -37,7 +36,6 @@ Options:
   --arch ARCH                Platform, e.g. linux/arm64 or linux/amd64
   --openclaw-version VER     OpenClaw version or "latest" (default: auto)
   --hermes-version VER       Hermes version or "latest" (default: auto)
-  --force                    Re-export/reload even if already known
 
 Examples:
   ./airgapped.sh --save --arch linux/arm64
@@ -55,7 +53,7 @@ while [[ $# -gt 0 ]]; do
     --arch) ARCH="$2"; shift 2 ;;
     --openclaw-version) OPENCLAW_VERSION="$2"; shift 2 ;;
     --hermes-version) HERMES_VERSION="$2"; shift 2 ;;
-    --force) FORCE=true; shift ;;
+
     -h|--help) usage ;;
     *) echo "ERROR: Unknown arg: $1" >&2; usage ;;
   esac
@@ -654,7 +652,7 @@ do_save() {
     oc_archive="$OUTPUT_DIR/$oc_file"
     oc_ledger="openclaw:${OPENCLAW_VERSION}:${ARCH_SUFFIX}"
 
-    if [[ "$FORCE" == true || ! -f "$oc_archive" ]]; then
+    if [[ ! -f "$oc_archive" ]]; then
       need_any_export=true
     fi
   fi
@@ -667,17 +665,16 @@ do_save() {
     hermes_archive="$OUTPUT_DIR/$hermes_file"
     hermes_ledger="hermes:${HERMES_VERSION}:${ARCH_SUFFIX}"
 
-    if [[ "$FORCE" == true || ! -f "$hermes_archive" ]]; then
+    if [[ ! -f "$hermes_archive" ]]; then
       need_any_export=true
     fi
   fi
 
-  if [[ "$FORCE" != true && "$need_any_export" == false ]]; then
+  if [[ "$need_any_export" == false ]]; then
     echo ""
     echo "==> No update needed. Archives already exist."
     [[ "$ENABLE_OPENCLAW" == "yes" ]] && echo "    OpenClaw archive: $oc_file"
     [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]] && echo "    Hermes archive:   $hermes_file"
-    echo "    Use --force to re-export."
     echo ""
 
     if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
@@ -691,7 +688,7 @@ do_save() {
   if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
     local oc_version_tag="v${OPENCLAW_VERSION}"
 
-    if [[ "$FORCE" != true && -f "$oc_archive" ]]; then
+    if [[ -f "$oc_archive" ]]; then
       echo "==> OpenClaw archive already present, skipping export: $oc_file"
     else
       local oc_ready=false
@@ -745,7 +742,7 @@ do_save() {
     local hermes_repo_short="${HERMES_REGISTRY#docker.io/}"
     local hermes_save_ref="${hermes_repo_short}:${hermes_tag}"
 
-    if [[ "$FORCE" != true && -f "$hermes_archive" ]]; then
+    if [[ -f "$hermes_archive" ]]; then
       echo "==> Hermes archive already present, skipping export: $hermes_file"
     else
       local hermes_ready=false
@@ -818,7 +815,7 @@ do_load() {
     local deployed_oc
     deployed_oc="$(get_deployed_version "openclaw")"
 
-    if [[ -n "$deployed_oc" && "$deployed_oc" == "$OPENCLAW_VERSION" && "$FORCE" != true ]]; then
+    if [[ -n "$deployed_oc" && "$deployed_oc" == "$OPENCLAW_VERSION" ]]; then
       echo "==> OpenClaw v$OPENCLAW_VERSION already deployed, no update needed"
     else
       local oc_image_tar
@@ -856,7 +853,7 @@ do_load() {
     local deployed_hermes
     deployed_hermes="$(get_deployed_version "hermes")"
 
-    if [[ -n "$deployed_hermes" && "$deployed_hermes" == "$HERMES_VERSION" && "$FORCE" != true ]]; then
+    if [[ -n "$deployed_hermes" && "$deployed_hermes" == "$HERMES_VERSION" ]]; then
       echo "==> Hermes v$HERMES_VERSION already deployed, no update needed"
     else
       local hermes_tar
