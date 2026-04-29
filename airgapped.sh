@@ -15,6 +15,7 @@ MODE=""
 ARCH=""
 OPENCLAW_VERSION=""
 HERMES_VERSION=""
+RUN_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 SAVE_ENGINE="${SAVE_ENGINE:-podman}"
 LOAD_ENGINE="${LOAD_ENGINE:-docker}"
 
@@ -380,8 +381,7 @@ hermes_image_file() {
   echo "hermes_${ARCH_SUFFIX}_v${HERMES_VERSION}.tar.gz"
 }
 tools_archive_file() {
-  local oc_ver="${OPENCLAW_VERSION:-none}"
-  echo "airgap_tools_${ARCH_SUFFIX}_v${oc_ver}.tar.gz"
+  echo "airgap_tools_${ARCH_SUFFIX}_${RUN_TIMESTAMP}.tar.gz"
 }
 
 # --- ledger: duplicate prevention ---
@@ -450,38 +450,61 @@ cleanup_prune_layers_for_load() {
   "$engine" image prune -f >/dev/null 2>&1 || true
 }
 
-ensure_openclaw_local_tag_aliases() {
+ensure_openclaw_tags_from_version() {
   local engine="$1"
+  local source_ref="${2:-}"
+  local version_tag="${3:-}"
 
-  if "$engine" image inspect "openclaw:local" >/dev/null 2>&1; then
-    "$engine" tag "openclaw:local" "localhost/openclaw:local" >/dev/null 2>&1 || true
+  local latest_ref="openclaw:local"
+  local latest_localhost="localhost/openclaw:local"
+  local version_ref="openclaw:${version_tag}"
+  local version_localhost="localhost/openclaw:${version_tag}"
+
+  if [[ -n "$source_ref" ]] && "$engine" image inspect "$source_ref" >/dev/null 2>&1; then
+    [[ -n "$version_tag" ]] && "$engine" tag "$source_ref" "$version_ref" >/dev/null 2>&1 || true
+    "$engine" tag "$source_ref" "$latest_ref" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n "$version_tag" ]] && "$engine" image inspect "$version_ref" >/dev/null 2>&1; then
+    "$engine" tag "$version_ref" "$latest_ref" >/dev/null 2>&1 || true
+    "$engine" tag "$version_ref" "$latest_localhost" >/dev/null 2>&1 || true
+    "$engine" tag "$version_ref" "$version_localhost" >/dev/null 2>&1 || true
     return 0
   fi
 
-  if "$engine" image inspect "localhost/openclaw:local" >/dev/null 2>&1; then
-    "$engine" tag "localhost/openclaw:local" "openclaw:local" >/dev/null 2>&1 || true
+  if "$engine" image inspect "$latest_ref" >/dev/null 2>&1; then
+    "$engine" tag "$latest_ref" "$latest_localhost" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  if "$engine" image inspect "$latest_localhost" >/dev/null 2>&1; then
+    "$engine" tag "$latest_localhost" "$latest_ref" >/dev/null 2>&1 || true
     return 0
   fi
 
   return 1
 }
 
-ensure_hermes_latest_tag_aliases() {
+ensure_hermes_tags_from_version() {
   local engine="$1"
   local source_ref="${2:-}"
+  local version_tag="${3:-}"
+
+  local repo_short="${HERMES_REGISTRY#docker.io/}"
+  local latest_ref="${repo_short}:latest"
+  local latest_localhost="localhost/${repo_short}:latest"
+  local version_ref="${repo_short}:${version_tag}"
+  local version_localhost="localhost/${repo_short}:${version_tag}"
 
   if [[ -n "$source_ref" ]] && "$engine" image inspect "$source_ref" >/dev/null 2>&1; then
-    "$engine" tag "$source_ref" "hermes-agent:latest" >/dev/null 2>&1 || true
-    "$engine" tag "$source_ref" "localhost/hermes-agent:latest" >/dev/null 2>&1 || true
+    [[ -n "$version_tag" ]] && "$engine" tag "$source_ref" "$version_ref" >/dev/null 2>&1 || true
+    "$engine" tag "$source_ref" "$latest_ref" >/dev/null 2>&1 || true
   fi
 
-  if "$engine" image inspect "hermes-agent:latest" >/dev/null 2>&1; then
-    "$engine" tag "hermes-agent:latest" "localhost/hermes-agent:latest" >/dev/null 2>&1 || true
-    return 0
-  fi
-
-  if "$engine" image inspect "localhost/hermes-agent:latest" >/dev/null 2>&1; then
-    "$engine" tag "localhost/hermes-agent:latest" "hermes-agent:latest" >/dev/null 2>&1 || true
+  if [[ -n "$version_tag" ]] && "$engine" image inspect "$version_ref" >/dev/null 2>&1; then
+    "$engine" tag "$version_ref" "$latest_ref" >/dev/null 2>&1 || true
+    "$engine" tag "$version_ref" "$latest_localhost" >/dev/null 2>&1 || true
+    "$engine" tag "$version_ref" "$version_localhost" >/dev/null 2>&1 || true
     return 0
   fi
 
@@ -509,7 +532,7 @@ offer_cleanup_after_save() {
   while IFS= read -r ref; do
     [[ -n "$ref" ]] || continue
     case "$ref" in
-      openclaw:local|localhost/openclaw:local|${OPENCLAW_REGISTRY}:*|ghcr.io/openclaw/openclaw:*|openclaw/openclaw:*|hermes-agent:latest|localhost/hermes-agent:latest|${HERMES_REGISTRY}:*|${HERMES_REGISTRY#docker.io/}:*|nousresearch/hermes-agent:*)
+      openclaw:local|localhost/openclaw:local|openclaw:v*|localhost/openclaw:v*|${OPENCLAW_REGISTRY}:*|ghcr.io/openclaw/openclaw:*|openclaw/openclaw:*|${HERMES_REGISTRY#docker.io/}:latest|localhost/${HERMES_REGISTRY#docker.io/}:latest|${HERMES_REGISTRY#docker.io/}:v*|localhost/${HERMES_REGISTRY#docker.io/}:v*|${HERMES_REGISTRY}:*|${HERMES_REGISTRY#docker.io/}:*|nousresearch/hermes-agent:*)
         refs_to_remove+=("$ref")
         ;;
     esac
@@ -540,23 +563,31 @@ offer_cleanup_after_load() {
 
   local keep_openclaw=""
   local keep_openclaw_localhost=""
+  local keep_openclaw_version=""
+  local keep_openclaw_version_localhost=""
   local keep_hermes_latest=""
   local keep_hermes_latest_localhost=""
+  local keep_hermes_version=""
+  local keep_hermes_version_localhost=""
   local keep_hermes_full=""
   local keep_hermes_short=""
   if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
     keep_openclaw="openclaw:local"
     keep_openclaw_localhost="localhost/openclaw:local"
+    keep_openclaw_version="openclaw:v${OPENCLAW_VERSION}"
+    keep_openclaw_version_localhost="localhost/openclaw:v${OPENCLAW_VERSION}"
   fi
   if [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]]; then
     local hermes_tag
-    keep_hermes_latest="hermes-agent:latest"
-    keep_hermes_latest_localhost="localhost/hermes-agent:latest"
+    keep_hermes_latest="${HERMES_REGISTRY#docker.io/}:latest"
+    keep_hermes_latest_localhost="localhost/${HERMES_REGISTRY#docker.io/}:latest"
     if [[ "$HERMES_VERSION" == "latest" ]]; then
       hermes_tag="latest"
     else
       hermes_tag="v${HERMES_VERSION}"
     fi
+    keep_hermes_version="${HERMES_REGISTRY#docker.io/}:${hermes_tag}"
+    keep_hermes_version_localhost="localhost/${HERMES_REGISTRY#docker.io/}:${hermes_tag}"
     keep_hermes_full="${HERMES_REGISTRY}:${hermes_tag}"
     keep_hermes_short="${HERMES_REGISTRY#docker.io/}:${hermes_tag}"
   fi
@@ -567,7 +598,7 @@ offer_cleanup_after_load() {
     [[ -n "$ref" ]] || continue
 
     case "$ref" in
-      openclaw:local|localhost/openclaw:local|${OPENCLAW_REGISTRY}:*|ghcr.io/openclaw/openclaw:*|openclaw/openclaw:*|hermes-agent:latest|localhost/hermes-agent:latest|${HERMES_REGISTRY}:*|${HERMES_REGISTRY#docker.io/}:*|nousresearch/hermes-agent:*)
+      openclaw:local|localhost/openclaw:local|openclaw:v*|localhost/openclaw:v*|${OPENCLAW_REGISTRY}:*|ghcr.io/openclaw/openclaw:*|openclaw/openclaw:*|${HERMES_REGISTRY#docker.io/}:latest|localhost/${HERMES_REGISTRY#docker.io/}:latest|${HERMES_REGISTRY#docker.io/}:v*|localhost/${HERMES_REGISTRY#docker.io/}:v*|${HERMES_REGISTRY}:*|${HERMES_REGISTRY#docker.io/}:*|nousresearch/hermes-agent:*)
         ;;
       *)
         continue
@@ -580,10 +611,22 @@ offer_cleanup_after_load() {
     if [[ -n "$keep_openclaw_localhost" && "$ref" == "$keep_openclaw_localhost" ]]; then
       continue
     fi
+    if [[ -n "$keep_openclaw_version" && "$ref" == "$keep_openclaw_version" ]]; then
+      continue
+    fi
+    if [[ -n "$keep_openclaw_version_localhost" && "$ref" == "$keep_openclaw_version_localhost" ]]; then
+      continue
+    fi
     if [[ -n "$keep_hermes_latest" && "$ref" == "$keep_hermes_latest" ]]; then
       continue
     fi
     if [[ -n "$keep_hermes_latest_localhost" && "$ref" == "$keep_hermes_latest_localhost" ]]; then
+      continue
+    fi
+    if [[ -n "$keep_hermes_version" && "$ref" == "$keep_hermes_version" ]]; then
+      continue
+    fi
+    if [[ -n "$keep_hermes_version_localhost" && "$ref" == "$keep_hermes_version_localhost" ]]; then
       continue
     fi
     if [[ -n "$keep_hermes_full" && "$ref" == "$keep_hermes_full" ]]; then
@@ -741,7 +784,7 @@ do_save() {
 
       # tag as openclaw:local for airgapped setup.sh
       $SAVE_ENGINE tag "$oc_pull_image" "openclaw:local"
-      ensure_openclaw_local_tag_aliases "$SAVE_ENGINE" || true
+      ensure_openclaw_tags_from_version "$SAVE_ENGINE" "$oc_pull_image" "v${OPENCLAW_VERSION}" || true
 
       # save image
       local oc_file
@@ -797,7 +840,7 @@ do_save() {
 
       echo "==> Pulling hermes: $hermes_pull_image (platform $ARCH)"
       $SAVE_ENGINE pull --platform "$ARCH" "$hermes_pull_image"
-      ensure_hermes_latest_tag_aliases "$SAVE_ENGINE" "$hermes_pull_image" || true
+      ensure_hermes_tags_from_version "$SAVE_ENGINE" "$hermes_pull_image" "$hermes_pull_tag" || true
 
       local hermes_file
       hermes_file="$(hermes_image_file)"
@@ -854,17 +897,22 @@ do_load() {
       oc_image_tar="$(find_file "openclaw_${ARCH_SUFFIX}_v${OPENCLAW_VERSION}.tar.gz")"
       oc_repo_tar="$(find_file "openclaw_github_v${OPENCLAW_VERSION}.tar.gz")"
 
-      # load image
-      if [[ -n "$oc_image_tar" && -f "$oc_image_tar" ]]; then
-        echo "==> Loading openclaw image from $oc_image_tar"
-        gunzip -c "$oc_image_tar" | $LOAD_ENGINE load
-      fi
+      local oc_version_tag="v${OPENCLAW_VERSION}"
 
-      if ensure_openclaw_local_tag_aliases "$LOAD_ENGINE"; then
-        echo "==> openclaw local image available (openclaw:local / localhost/openclaw:local)"
+      if ensure_openclaw_tags_from_version "$LOAD_ENGINE" "" "$oc_version_tag"; then
+        echo "==> openclaw image already present (openclaw:$oc_version_tag), skipping image load"
       else
-        echo "ERROR: No openclaw local image found after load (checked openclaw:local and localhost/openclaw:local)" >&2
-        exit 1
+        if [[ -n "$oc_image_tar" && -f "$oc_image_tar" ]]; then
+          echo "==> Loading openclaw image from $oc_image_tar"
+          gunzip -c "$oc_image_tar" | $LOAD_ENGINE load
+        fi
+
+        if ensure_openclaw_tags_from_version "$LOAD_ENGINE" "" "$oc_version_tag"; then
+          echo "==> openclaw local image available (openclaw:local + openclaw:$oc_version_tag)"
+        else
+          echo "ERROR: Could not prepare required openclaw tags (openclaw:local and openclaw:$oc_version_tag)" >&2
+          exit 1
+        fi
       fi
 
       # extract repo
@@ -908,20 +956,25 @@ do_load() {
       fi
       local hermes_source_ref="${HERMES_REGISTRY}:${hermes_tag}"
 
-      if [[ -n "$hermes_tar" && -f "$hermes_tar" ]]; then
-        echo "==> Loading hermes image from $hermes_tar"
-        gunzip -c "$hermes_tar" | $LOAD_ENGINE load
-        set_deployed_version "hermes" "$HERMES_VERSION"
+      if ensure_hermes_tags_from_version "$LOAD_ENGINE" "$hermes_source_ref" "$hermes_tag"; then
+        echo "==> hermes image already present (${HERMES_REGISTRY#docker.io/}:$hermes_tag), skipping image load"
       else
-        echo "WARNING: No hermes image tar found (expected hermes_${ARCH_SUFFIX}_v${HERMES_VERSION}.tar.gz)"
+        if [[ -n "$hermes_tar" && -f "$hermes_tar" ]]; then
+          echo "==> Loading hermes image from $hermes_tar"
+          gunzip -c "$hermes_tar" | $LOAD_ENGINE load
+        else
+          echo "WARNING: No hermes image tar found (expected hermes_${ARCH_SUFFIX}_v${HERMES_VERSION}.tar.gz)"
+        fi
+
+        if ensure_hermes_tags_from_version "$LOAD_ENGINE" "$hermes_source_ref" "$hermes_tag"; then
+          echo "==> hermes local image available (${HERMES_REGISTRY#docker.io/}:latest + ${HERMES_REGISTRY#docker.io/}:$hermes_tag)"
+        else
+          echo "ERROR: Could not prepare required hermes tags (${HERMES_REGISTRY#docker.io/}:latest and :$hermes_tag)" >&2
+          exit 1
+        fi
       fi
 
-      if ensure_hermes_latest_tag_aliases "$LOAD_ENGINE" "$hermes_source_ref"; then
-        echo "==> hermes local image available (hermes-agent:latest / localhost/hermes-agent:latest)"
-      else
-        echo "ERROR: Could not prepare required hermes-agent:latest alias (source: $hermes_source_ref)" >&2
-        exit 1
-      fi
+      set_deployed_version "hermes" "$HERMES_VERSION"
     fi
   else
     echo "==> Hermes Agent: disabled, skipping"
