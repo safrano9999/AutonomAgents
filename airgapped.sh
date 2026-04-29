@@ -543,7 +543,7 @@ ensure_setup_force_recreate() {
 patch_setup() {
   local repo_dir="$SCRIPT_DIR/openclaw"
   local setup_file="$repo_dir/scripts/docker/setup.sh"
-  local patch_file="$SCRIPT_DIR/assets/openclaw-setup-airgap.patch"
+  local patch_file="$SCRIPT_DIR/assets/setup-offline.patch"
 
   ensure_openclaw_repo_for_patch
 

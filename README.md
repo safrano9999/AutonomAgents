@@ -27,7 +27,7 @@ Transfer bundle is created in `copy/extract_me_<timestamp>/`:
 
 Patch source file:
 
-- `assets/openclaw-setup-airgap.patch`
+- `assets/setup-offline.patch`
 
 ## 🚀 Quick Start
 
