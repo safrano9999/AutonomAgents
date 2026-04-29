@@ -602,6 +602,8 @@ create_copy_bundle() {
   mkdir -p "$bundle_dir"
   cp -f "$SCRIPT_DIR/airgapped.sh" "$bundle_dir/airgapped.sh"
 
+  local missing=0
+
   if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
     if [[ -d "$SCRIPT_DIR/openclaw" ]]; then
       cp -a "$SCRIPT_DIR/openclaw" "$bundle_dir/openclaw"
@@ -614,7 +616,8 @@ create_copy_bundle() {
     if [[ -f "$OUTPUT_DIR/$oc_file" ]]; then
       cp -f "$OUTPUT_DIR/$oc_file" "$bundle_dir/"
     else
-      echo "WARNING: Missing image archive $OUTPUT_DIR/$oc_file"
+      echo "ERROR: Missing image archive $OUTPUT_DIR/$oc_file"
+      missing=1
     fi
   fi
 
@@ -624,11 +627,19 @@ create_copy_bundle() {
     if [[ -f "$OUTPUT_DIR/$hermes_file" ]]; then
       cp -f "$OUTPUT_DIR/$hermes_file" "$bundle_dir/"
     else
-      echo "WARNING: Missing image archive $OUTPUT_DIR/$hermes_file"
+      echo "ERROR: Missing image archive $OUTPUT_DIR/$hermes_file"
+      missing=1
     fi
   fi
 
+  if [[ "$missing" -ne 0 ]]; then
+    echo "ERROR: Bundle creation failed due to missing required archives." >&2
+    exit 1
+  fi
+
   echo "==> Created copy bundle -> $bundle_dir"
+  echo "==> Bundle files:"
+  ls -lh "$bundle_dir"
 }
 do_save() {
   mkdir -p "$OUTPUT_DIR"
