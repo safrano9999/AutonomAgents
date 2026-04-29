@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-COPY_DIR="$SCRIPT_DIR/copy"
+COPY_DIR="./copy"
 LEDGER_FILE="$SCRIPT_DIR/.ledger"
 DEPLOYED_FILE="$SCRIPT_DIR/.deployed"
 
@@ -60,6 +60,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$MODE" ]] && { echo "ERROR: --save, --load or --patch required" >&2; usage; }
+mkdir -p ./copy
 
 ARCH_SUFFIX=""
 if [[ "$MODE" == "save" || "$MODE" == "load" ]]; then
