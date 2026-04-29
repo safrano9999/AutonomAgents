@@ -4,7 +4,7 @@ Tooling for exporting and loading **OpenClaw** + **Hermes** in airgapped environ
 
 ## ✅ What this script does
 
-- Exports versioned image archives on a connected machine (`--save`)
+- Exports versioned archives on a connected machine (`--save`)
 - Loads them on an airgapped machine (`--load`)
 - Patches `openclaw/scripts/docker/setup.sh` for offline use (`--patch`)
 - Keeps required runtime tags:
@@ -14,16 +14,18 @@ Tooling for exporting and loading **OpenClaw** + **Hermes** in airgapped environ
 
 ## 📦 Output
 
-Image archives stay in `output/`:
+Archives stay in `output/`:
 
 - `openclaw_<arch>_v<version>.tar.gz`
 - `hermes_<arch>_v<version>.tar.gz`
+- `openclaw_github_v<version>.tar.gz`
 
-Transfer bundle is created in `copy/extract_me_<timestamp>/`:
+Transfer bundle `copy/extract_me_<timestamp>/` contains:
 
 - `airgapped.sh`
-- `openclaw/` (patched repo, if OpenClaw enabled)
-- selected image archives
+- `openclaw_<arch>_v<version>.tar.gz`
+- `hermes_<arch>_v<version>.tar.gz`
+- `openclaw_github_v<version>.tar.gz`
 
 Patch source file:
 
@@ -47,6 +49,8 @@ Copy the full folder `copy/extract_me_<timestamp>/`.
 cd extract_me_<timestamp>
 ./airgapped.sh --load --arch linux/arm64
 ```
+
+`--load` extracts `openclaw_github_v<version>.tar.gz` automatically when `openclaw/` is missing.
 
 ### 4) Start OpenClaw setup
 

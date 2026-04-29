@@ -360,6 +360,26 @@ hermes_image_file() {
 copy_bundle_dir() {
   echo "$COPY_DIR/extract_me_${RUN_TIMESTAMP}"
 }
+oc_repo_file() {
+  echo "openclaw_github_v${OPENCLAW_VERSION}.tar.gz"
+}
+
+ensure_openclaw_repo_archive() {
+  local repo_dir="$SCRIPT_DIR/openclaw"
+  local repo_file
+  local repo_archive
+
+  repo_file="$(oc_repo_file)"
+  repo_archive="$OUTPUT_DIR/$repo_file"
+
+  if [[ ! -d "$repo_dir" ]]; then
+    echo "ERROR: openclaw/ directory missing, cannot create repo archive" >&2
+    exit 1
+  fi
+
+  echo "==> Saving openclaw repo archive -> $repo_file"
+  tar -czf "$repo_archive" -C "$SCRIPT_DIR" openclaw
+}
 
 ledger_contains() {
   local entry="$1"
@@ -656,18 +676,22 @@ create_copy_bundle() {
   local missing=0
 
   if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
-    if [[ -d "$SCRIPT_DIR/openclaw" ]]; then
-      cp -a "$SCRIPT_DIR/openclaw" "$bundle_dir/openclaw"
-    else
-      echo "WARNING: openclaw/ directory missing, bundle will not contain repo"
-    fi
-
     local oc_file
+    local oc_repo
     oc_file="$(oc_image_file)"
+    oc_repo="$(oc_repo_file)"
+
     if [[ -f "$OUTPUT_DIR/$oc_file" ]]; then
       cp -f "$OUTPUT_DIR/$oc_file" "$bundle_dir/"
     else
       echo "ERROR: Missing image archive $OUTPUT_DIR/$oc_file"
+      missing=1
+    fi
+
+    if [[ -f "$OUTPUT_DIR/$oc_repo" ]]; then
+      cp -f "$OUTPUT_DIR/$oc_repo" "$bundle_dir/"
+    else
+      echo "ERROR: Missing repo archive $OUTPUT_DIR/$oc_repo"
       missing=1
     fi
   fi
@@ -700,13 +724,15 @@ do_save() {
 
   local oc_file=""
   local oc_archive=""
+  local oc_repo_archive=""
   local oc_ledger=""
   if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
     oc_file="$(oc_image_file)"
     oc_archive="$OUTPUT_DIR/$oc_file"
+    oc_repo_archive="$OUTPUT_DIR/$(oc_repo_file)"
     oc_ledger="openclaw:${OPENCLAW_VERSION}:${ARCH_SUFFIX}"
 
-    if [[ ! -f "$oc_archive" ]]; then
+    if [[ ! -f "$oc_archive" || ! -f "$oc_repo_archive" ]]; then
       need_any_export=true
     fi
   fi
@@ -727,12 +753,16 @@ do_save() {
   if [[ "$need_any_export" == false ]]; then
     echo ""
     echo "==> No update needed. Archives already exist."
-    [[ "$ENABLE_OPENCLAW" == "yes" ]] && echo "    OpenClaw archive: $oc_file"
+    if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
+      echo "    OpenClaw image:   $oc_file"
+      echo "    OpenClaw repo:    $(oc_repo_file)"
+    fi
     [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]] && echo "    Hermes archive:   $hermes_file"
     echo ""
 
     if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
       patch_setup
+      ensure_openclaw_repo_archive
     fi
 
     create_copy_bundle
@@ -839,6 +869,7 @@ do_save() {
 
   if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
     patch_setup
+    ensure_openclaw_repo_archive
   fi
 
   create_copy_bundle
@@ -855,8 +886,10 @@ do_save() {
 
   offer_cleanup_after_save
 }
+
 do_load() {
   ensure_engine_ready "$LOAD_ENGINE" "--load"
+
   find_file() {
     local pattern="$1"
     local found=""
@@ -893,6 +926,18 @@ do_load() {
           echo "==> openclaw local image available (openclaw:local + openclaw:$oc_version_tag)"
         else
           echo "ERROR: Could not prepare required openclaw tags (openclaw:local and openclaw:$oc_version_tag)" >&2
+          exit 1
+        fi
+      fi
+
+      if [[ ! -d "$SCRIPT_DIR/openclaw" ]]; then
+        local oc_repo_tar
+        oc_repo_tar="$(find_file "openclaw_github_v${OPENCLAW_VERSION}.tar.gz")"
+        if [[ -n "$oc_repo_tar" && -f "$oc_repo_tar" ]]; then
+          echo "==> Extracting openclaw repo from $oc_repo_tar"
+          tar -xzf "$oc_repo_tar" -C "$SCRIPT_DIR"
+        else
+          echo "ERROR: Missing openclaw repo archive openclaw_github_v${OPENCLAW_VERSION}.tar.gz" >&2
           exit 1
         fi
       fi
@@ -959,7 +1004,6 @@ do_load() {
 
   offer_cleanup_after_load
 }
-
 case "$MODE" in
   save) do_save ;;
   load) do_load ;;
