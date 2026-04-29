@@ -379,7 +379,7 @@ ensure_openclaw_repo_archive() {
     exit 1
   fi
 
-  echo "==> Saving openclaw repo archive -> $repo_file"
+  echo "==> Saving openclaw repo archive -> $repo_archive"
   tar -czf "$repo_archive" -C "$SCRIPT_DIR" openclaw
 }
 ledger_contains() {
@@ -721,7 +721,7 @@ do_save() {
       exit 1
     fi
 
-    echo "==> Saving openclaw image -> $oc_file"
+    echo "==> Saving openclaw image -> $oc_archive"
     $SAVE_ENGINE save "openclaw:local" | gzip > "$oc_archive"
 
     patch_setup
@@ -772,7 +772,7 @@ do_save() {
       exit 1
     fi
 
-    echo "==> Saving hermes image -> $hermes_file"
+    echo "==> Saving hermes image -> $hermes_archive"
     $SAVE_ENGINE save "$hermes_save_ref" | gzip > "$hermes_archive"
 
     if ! ledger_contains "$hermes_ledger"; then
