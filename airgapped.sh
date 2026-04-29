@@ -668,20 +668,25 @@ CURRENT_BUNDLE_DIR=""
 
 create_copy_bundle() {
   local bundle_dir
+  local stage_dir
   bundle_dir="$COPY_DIR"
 
   mkdir -p "$COPY_DIR"
-  rm -rf "$COPY_DIR"/extract_me_* 2>/dev/null || true
+  rm -rf "$COPY_DIR"/extract_me_* "$COPY_DIR"/assets 2>/dev/null || true
   rm -f "$COPY_DIR"/*.tar.gz "$COPY_DIR"/airgapped.sh 2>/dev/null || true
 
-  cp -f "$SCRIPT_DIR/airgapped.sh" "$bundle_dir/airgapped.sh"
-
-  if [[ -d "/assets" ]]; then
-    mkdir -p "/assets"
-    cp -a "/assets/." "/assets/"
+  stage_dir="$(mktemp -d)"
+  cp -f "$SCRIPT_DIR/airgapped.sh" "$stage_dir/airgapped.sh"
+  if [[ -d "$SCRIPT_DIR/assets" ]]; then
+    mkdir -p "$stage_dir/assets"
+    cp -a "$SCRIPT_DIR/assets/." "$stage_dir/assets/"
   fi
 
+  tar -cf "$bundle_dir/extract_me.tar" -C "$stage_dir" .
+  rm -rf "$stage_dir"
+
   CURRENT_BUNDLE_DIR="$bundle_dir"
+  echo "==> Created helper archive -> $bundle_dir/extract_me.tar"
   echo "==> Created copy bundle -> $bundle_dir"
 }
 do_save() {
@@ -792,10 +797,11 @@ do_save() {
   echo "==> Bundle files:"
   ls -lh "$bundle_dir"
   echo ""
-  echo "Copy this ./copy directory to the airgapped machine:"
+  echo "Copy this ./copy directory to the airgapped machine (contains extract_me.tar + image archives):"
   echo "  $bundle_dir"
   echo "Then run:"
-  echo "  cd $bundle_dir"
+  echo "  cd $bundle_dir
+  tar -xf extract_me.tar"
   echo "  ./airgapped.sh --load --arch $ARCH"
 
   offer_cleanup_after_save

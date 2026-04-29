@@ -2,85 +2,34 @@
 
 Tooling for exporting and loading **OpenClaw** + **Hermes** in airgapped environments.
 
-## ✅ What this script does
+## 📦 `./copy` output
 
-- Exports versioned archives on a connected machine (`--save`)
-- Loads them on an airgapped machine (`--load`)
-- Patches `openclaw/scripts/docker/setup.sh` for offline use (`--patch`)
-- Keeps required runtime tags:
-  - `openclaw:local` + `openclaw:v<OPENCLAW_VERSION>`
-  - `nousresearch/hermes-agent:latest` + `nousresearch/hermes-agent:v<HERMES_VERSION>`
-- Creates transfer folder: `copy/`
+`--save` writes only archives to `./copy/`.
 
-## 📦 Transfer Folder
+Always present:
+- `extract_me.tar` (contains `airgapped.sh` + `assets/` incl. patch + Hermes compose)
 
-`--save` writes deploy artifacts directly to `./copy/`:
-
-- `copy/`
-
-
-- `airgapped.sh`
-- `assets/setup-offline.patch`
-- `assets/hermes-docker-compose.yml`
+Depending on selected components:
 - `openclaw_<arch>_v<version>.tar.gz`
-- `hermes_<arch>_v<version>.tar.gz`
 - `openclaw_github_v<version>.tar.gz`
+- `hermes_<arch>_v<version>.tar.gz`
 
-Patch source file:
+Archive count:
+- both OpenClaw + Hermes selected: **4 archives**
+- only one component selected: **at least 2 archives**
 
-- `assets/setup-offline.patch`
-- `assets/hermes-docker-compose.yml`
+## 🚀 Usage
 
-## 🚀 Quick Start
-
-### 1) Connected machine: export + bundle
-
+Connected machine:
 ```bash
 ./airgapped.sh --save --arch linux/arm64
 ```
 
-### 2) Copy transfer folder to airgapped machine
-
-Copy the full folder `copy/`.
-
-### 3) On airgapped machine: load
-
+Airgapped machine:
 ```bash
 cd copy
+tar -xf extract_me.tar
 ./airgapped.sh --load --arch linux/arm64
 ```
 
-If `openclaw/` is missing, it auto-extracts `openclaw_github_v<version>.tar.gz`.
-
-### 4) Start OpenClaw setup
-
-```bash
-cd openclaw
-OPENCLAW_IMAGE=openclaw:local bash scripts/docker/setup.sh
-```
-
-## 🔁 Load behavior
-
-`--load` checks version tags before importing:
-
-- OpenClaw: `openclaw:v<OPENCLAW_VERSION>`
-- Hermes: `nousresearch/hermes-agent:v<HERMES_VERSION>`
-
-If already present, image import is skipped.
-
-## 🧩 Patch-only mode
-
-```bash
-./airgapped.sh --patch
-```
-
-- Clones `openclaw/` automatically if missing (except in `--load` mode)
-- Re-running patch is safe (`already patched`)
-- If patch no longer matches upstream: `Patch failed. New upstream version?`
-
-## 🧹 Cleanup options
-
-At the end of `--save` and `--load`, cleanup is offered interactively.
-
-- `--save`: removes OpenClaw/Hermes local images and dangling layers
-- `--load`: removes redundant legacy versions, keeps current tags, and prunes cache/layers
+`--load` imports images and patches setup files. It does **not** start containers automatically.
