@@ -12,15 +12,13 @@ Tooling for exporting and loading **OpenClaw** + **Hermes** in airgapped environ
   - `nousresearch/hermes-agent:latest` + `nousresearch/hermes-agent:v<HERMES_VERSION>`
 - Creates transfer folder: `copy/extract_me_<timestamp>/`
 
-## 📦 Output
+## 📦 Transfer Folder
 
-Archives stay in `output/`:
+`--save` creates exactly one deploy folder:
 
-- `openclaw_<arch>_v<version>.tar.gz`
-- `hermes_<arch>_v<version>.tar.gz`
-- `openclaw_github_v<version>.tar.gz`
+- `copy/extract_me_<timestamp>/`
 
-Transfer bundle `copy/extract_me_<timestamp>/` contains:
+Inside this folder:
 
 - `airgapped.sh`
 - `openclaw_<arch>_v<version>.tar.gz`
@@ -50,7 +48,8 @@ cd extract_me_<timestamp>
 ./airgapped.sh --load --arch linux/arm64
 ```
 
-`--load` extracts `openclaw_github_v<version>.tar.gz` automatically when `openclaw/` is missing.
+`--load` takes the archives from the current folder.
+If `openclaw/` is missing, it auto-extracts `openclaw_github_v<version>.tar.gz`.
 
 ### 4) Start OpenClaw setup
 

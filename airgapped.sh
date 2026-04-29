@@ -2,10 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUTPUT_DIR="$SCRIPT_DIR/output"
+
 COPY_DIR="$SCRIPT_DIR/copy"
-LEDGER_FILE="$OUTPUT_DIR/.ledger"
-DEPLOYED_FILE="$OUTPUT_DIR/.deployed"
+LEDGER_FILE="$SCRIPT_DIR/.ledger"
+DEPLOYED_FILE="$SCRIPT_DIR/.deployed"
 
 ENABLE_OPENCLAW=""
 ENABLE_HERMES=""
@@ -39,7 +39,7 @@ Options:
 
 Examples:
   ./airgapped.sh --save --arch linux/arm64
-  ./airgapped.sh --load --arch linux/arm64 --openclaw-version 2026.4.26 --hermes-version 2026.4.23
+  ./airgapped.sh --load --arch linux/arm64
   ./airgapped.sh --patch
 USAGE
   exit 1
@@ -129,7 +129,7 @@ detect_version_from_archives() {
   local prefix="$1"
   local latest=""
   local f
-  for dir in "$OUTPUT_DIR" "$PWD" "$SCRIPT_DIR"; do
+  for dir in "$PWD" "$SCRIPT_DIR" "$SCRIPT_DIR/copy"; do
     for f in "$dir"/${prefix}_${ARCH_SUFFIX}_v*.tar.gz; do
       [[ -f "$f" ]] || continue
       local base ver
@@ -154,7 +154,7 @@ resolve_openclaw_version() {
       OPENCLAW_VERSION="$(fetch_latest_gh_version "openclaw/openclaw")" || exit 1
     else
       OPENCLAW_VERSION="$(detect_version_from_archives "openclaw")"
-      [[ -z "$OPENCLAW_VERSION" ]] && { echo "ERROR: No openclaw archives found. Use --openclaw-version" >&2; exit 1; }
+      [[ -z "$OPENCLAW_VERSION" ]] && { echo "ERROR: No openclaw archive found in current folder. Provide --openclaw-version or place archive in this folder" >&2; exit 1; }
     fi
   fi
   echo "$OPENCLAW_VERSION"
@@ -365,12 +365,13 @@ oc_repo_file() {
 }
 
 ensure_openclaw_repo_archive() {
+  local target_dir="${1:-$SCRIPT_DIR}"
   local repo_dir="$SCRIPT_DIR/openclaw"
   local repo_file
   local repo_archive
 
   repo_file="$(oc_repo_file)"
-  repo_archive="$OUTPUT_DIR/$repo_file"
+  repo_archive="$target_dir/$repo_file"
 
   if [[ ! -d "$repo_dir" ]]; then
     echo "ERROR: openclaw/ directory missing, cannot create repo archive" >&2
@@ -380,7 +381,6 @@ ensure_openclaw_repo_archive() {
   echo "==> Saving openclaw repo archive -> $repo_file"
   tar -czf "$repo_archive" -C "$SCRIPT_DIR" openclaw
 }
-
 ledger_contains() {
   local entry="$1"
   [[ -f "$LEDGER_FILE" ]] && grep -qxF "$entry" "$LEDGER_FILE"
@@ -663,6 +663,8 @@ patch_setup() {
   exit 1
 }
 
+CURRENT_BUNDLE_DIR=""
+
 create_copy_bundle() {
   local bundle_dir
   bundle_dir="$(copy_bundle_dir)"
@@ -673,140 +675,56 @@ create_copy_bundle() {
   mkdir -p "$bundle_dir"
   cp -f "$SCRIPT_DIR/airgapped.sh" "$bundle_dir/airgapped.sh"
 
-  local missing=0
-
-  if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
-    local oc_file
-    local oc_repo
-    oc_file="$(oc_image_file)"
-    oc_repo="$(oc_repo_file)"
-
-    if [[ -f "$OUTPUT_DIR/$oc_file" ]]; then
-      cp -f "$OUTPUT_DIR/$oc_file" "$bundle_dir/"
-    else
-      echo "ERROR: Missing image archive $OUTPUT_DIR/$oc_file"
-      missing=1
-    fi
-
-    if [[ -f "$OUTPUT_DIR/$oc_repo" ]]; then
-      cp -f "$OUTPUT_DIR/$oc_repo" "$bundle_dir/"
-    else
-      echo "ERROR: Missing repo archive $OUTPUT_DIR/$oc_repo"
-      missing=1
-    fi
-  fi
-
-  if [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]]; then
-    local hermes_file
-    hermes_file="$(hermes_image_file)"
-    if [[ -f "$OUTPUT_DIR/$hermes_file" ]]; then
-      cp -f "$OUTPUT_DIR/$hermes_file" "$bundle_dir/"
-    else
-      echo "ERROR: Missing image archive $OUTPUT_DIR/$hermes_file"
-      missing=1
-    fi
-  fi
-
-  if [[ "$missing" -ne 0 ]]; then
-    echo "ERROR: Bundle creation failed due to missing required archives." >&2
-    exit 1
-  fi
-
+  CURRENT_BUNDLE_DIR="$bundle_dir"
   echo "==> Created copy bundle -> $bundle_dir"
-  echo "==> Bundle files:"
-  ls -lh "$bundle_dir"
 }
+
 do_save() {
   ensure_engine_ready "$SAVE_ENGINE" "--save"
-  mkdir -p "$OUTPUT_DIR"
+  create_copy_bundle
 
-  local need_any_export=false
+  local bundle_dir="$CURRENT_BUNDLE_DIR"
 
-  local oc_file=""
-  local oc_archive=""
-  local oc_repo_archive=""
-  local oc_ledger=""
   if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
+    local oc_file oc_archive oc_ledger oc_version_tag
     oc_file="$(oc_image_file)"
-    oc_archive="$OUTPUT_DIR/$oc_file"
-    oc_repo_archive="$OUTPUT_DIR/$(oc_repo_file)"
+    oc_archive="$bundle_dir/$oc_file"
     oc_ledger="openclaw:${OPENCLAW_VERSION}:${ARCH_SUFFIX}"
+    oc_version_tag="v${OPENCLAW_VERSION}"
 
-    if [[ ! -f "$oc_archive" || ! -f "$oc_repo_archive" ]]; then
-      need_any_export=true
-    fi
-  fi
-
-  local hermes_file=""
-  local hermes_archive=""
-  local hermes_ledger=""
-  if [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]]; then
-    hermes_file="$(hermes_image_file)"
-    hermes_archive="$OUTPUT_DIR/$hermes_file"
-    hermes_ledger="hermes:${HERMES_VERSION}:${ARCH_SUFFIX}"
-
-    if [[ ! -f "$hermes_archive" ]]; then
-      need_any_export=true
-    fi
-  fi
-
-  if [[ "$need_any_export" == false ]]; then
-    echo ""
-    echo "==> No update needed. Archives already exist."
-    if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
-      echo "    OpenClaw image:   $oc_file"
-      echo "    OpenClaw repo:    $(oc_repo_file)"
-    fi
-    [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]] && echo "    Hermes archive:   $hermes_file"
-    echo ""
-
-    if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
-      patch_setup
-      ensure_openclaw_repo_archive
+    local oc_ready=false
+    if ensure_openclaw_tags_from_version "$SAVE_ENGINE" "openclaw:${oc_version_tag}" "$oc_version_tag"; then
+      oc_ready=true
+    elif ensure_openclaw_tags_from_version "$SAVE_ENGINE" "openclaw:local" "$oc_version_tag"; then
+      oc_ready=true
     fi
 
-    create_copy_bundle
-    return 0
-  fi
-
-  if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
-    local oc_version_tag="v${OPENCLAW_VERSION}"
-
-    if [[ -f "$oc_archive" ]]; then
-      echo "==> OpenClaw archive already present, skipping export: $oc_file"
+    if [[ "$oc_ready" == true ]]; then
+      echo "==> Reusing local OpenClaw image (no pull): openclaw:$oc_version_tag / openclaw:local"
     else
-      local oc_ready=false
-
-      if ensure_openclaw_tags_from_version "$SAVE_ENGINE" "openclaw:${oc_version_tag}" "$oc_version_tag"; then
-        oc_ready=true
-      elif ensure_openclaw_tags_from_version "$SAVE_ENGINE" "openclaw:local" "$oc_version_tag"; then
-        oc_ready=true
-      fi
-
-      if [[ "$oc_ready" == true ]]; then
-        echo "==> Reusing local OpenClaw image (no pull): openclaw:$oc_version_tag / openclaw:local"
+      local oc_pull_tag oc_pull_image
+      if [[ "$OPENCLAW_VERSION" == "latest" ]]; then
+        oc_pull_tag="latest"
       else
-        local oc_pull_tag
-        if [[ "$OPENCLAW_VERSION" == "latest" ]]; then
-          oc_pull_tag="latest"
-        else
-          oc_pull_tag="${OPENCLAW_VERSION}-slim-${ARCH_SUFFIX}"
-        fi
-        local oc_pull_image="${OPENCLAW_REGISTRY}:${oc_pull_tag}"
-
-        echo "==> Pulling openclaw: $oc_pull_image (platform $ARCH)"
-        $SAVE_ENGINE pull --platform "$ARCH" "$oc_pull_image"
-        ensure_openclaw_tags_from_version "$SAVE_ENGINE" "$oc_pull_image" "$oc_version_tag" || true
+        oc_pull_tag="${OPENCLAW_VERSION}-slim-${ARCH_SUFFIX}"
       fi
+      oc_pull_image="${OPENCLAW_REGISTRY}:${oc_pull_tag}"
 
-      if ! $SAVE_ENGINE image inspect "openclaw:local" >/dev/null 2>&1; then
-        echo "ERROR: openclaw:local missing after prepare step" >&2
-        exit 1
-      fi
-
-      echo "==> Saving openclaw image -> $oc_file"
-      $SAVE_ENGINE save "openclaw:local" | gzip > "$oc_archive"
+      echo "==> Pulling openclaw: $oc_pull_image (platform $ARCH)"
+      $SAVE_ENGINE pull --platform "$ARCH" "$oc_pull_image"
+      ensure_openclaw_tags_from_version "$SAVE_ENGINE" "$oc_pull_image" "$oc_version_tag" || true
     fi
+
+    if ! $SAVE_ENGINE image inspect "openclaw:local" >/dev/null 2>&1; then
+      echo "ERROR: openclaw:local missing after prepare step" >&2
+      exit 1
+    fi
+
+    echo "==> Saving openclaw image -> $oc_file"
+    $SAVE_ENGINE save "openclaw:local" | gzip > "$oc_archive"
+
+    patch_setup
+    ensure_openclaw_repo_archive "$bundle_dir"
 
     if ! ledger_contains "$oc_ledger"; then
       ledger_add "$oc_ledger"
@@ -816,46 +734,45 @@ do_save() {
   fi
 
   if [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]]; then
-    local hermes_tag
+    local hermes_file hermes_archive hermes_ledger hermes_tag hermes_repo_short hermes_save_ref
+    hermes_file="$(hermes_image_file)"
+    hermes_archive="$bundle_dir/$hermes_file"
+    hermes_ledger="hermes:${HERMES_VERSION}:${ARCH_SUFFIX}"
+
     if [[ "$HERMES_VERSION" == "latest" ]]; then
       hermes_tag="latest"
     else
       hermes_tag="v${HERMES_VERSION}"
     fi
+    hermes_repo_short="${HERMES_REGISTRY#docker.io/}"
+    hermes_save_ref="${hermes_repo_short}:${hermes_tag}"
 
-    local hermes_repo_short="${HERMES_REGISTRY#docker.io/}"
-    local hermes_save_ref="${hermes_repo_short}:${hermes_tag}"
-
-    if [[ -f "$hermes_archive" ]]; then
-      echo "==> Hermes archive already present, skipping export: $hermes_file"
-    else
-      local hermes_ready=false
-
-      if ensure_hermes_tags_from_version "$SAVE_ENGINE" "${HERMES_REGISTRY}:${hermes_tag}" "$hermes_tag"; then
-        hermes_ready=true
-      elif ensure_hermes_tags_from_version "$SAVE_ENGINE" "${hermes_repo_short}:${hermes_tag}" "$hermes_tag"; then
-        hermes_ready=true
-      elif ensure_hermes_tags_from_version "$SAVE_ENGINE" "${hermes_repo_short}:latest" "$hermes_tag"; then
-        hermes_ready=true
-      fi
-
-      if [[ "$hermes_ready" == true ]]; then
-        echo "==> Reusing local Hermes image (no pull): ${hermes_repo_short}:latest / ${hermes_repo_short}:${hermes_tag}"
-      else
-        local hermes_pull_image="${HERMES_REGISTRY}:${hermes_tag}"
-        echo "==> Pulling hermes: $hermes_pull_image (platform $ARCH)"
-        $SAVE_ENGINE pull --platform "$ARCH" "$hermes_pull_image"
-        ensure_hermes_tags_from_version "$SAVE_ENGINE" "$hermes_pull_image" "$hermes_tag" || true
-      fi
-
-      if ! $SAVE_ENGINE image inspect "$hermes_save_ref" >/dev/null 2>&1; then
-        echo "ERROR: $hermes_save_ref missing after prepare step" >&2
-        exit 1
-      fi
-
-      echo "==> Saving hermes image -> $hermes_file"
-      $SAVE_ENGINE save "$hermes_save_ref" | gzip > "$hermes_archive"
+    local hermes_ready=false
+    if ensure_hermes_tags_from_version "$SAVE_ENGINE" "${HERMES_REGISTRY}:${hermes_tag}" "$hermes_tag"; then
+      hermes_ready=true
+    elif ensure_hermes_tags_from_version "$SAVE_ENGINE" "${hermes_repo_short}:${hermes_tag}" "$hermes_tag"; then
+      hermes_ready=true
+    elif ensure_hermes_tags_from_version "$SAVE_ENGINE" "${hermes_repo_short}:latest" "$hermes_tag"; then
+      hermes_ready=true
     fi
+
+    if [[ "$hermes_ready" == true ]]; then
+      echo "==> Reusing local Hermes image (no pull): ${hermes_repo_short}:latest / ${hermes_repo_short}:${hermes_tag}"
+    else
+      local hermes_pull_image
+      hermes_pull_image="${HERMES_REGISTRY}:${hermes_tag}"
+      echo "==> Pulling hermes: $hermes_pull_image (platform $ARCH)"
+      $SAVE_ENGINE pull --platform "$ARCH" "$hermes_pull_image"
+      ensure_hermes_tags_from_version "$SAVE_ENGINE" "$hermes_pull_image" "$hermes_tag" || true
+    fi
+
+    if ! $SAVE_ENGINE image inspect "$hermes_save_ref" >/dev/null 2>&1; then
+      echo "ERROR: $hermes_save_ref missing after prepare step" >&2
+      exit 1
+    fi
+
+    echo "==> Saving hermes image -> $hermes_file"
+    $SAVE_ENGINE save "$hermes_save_ref" | gzip > "$hermes_archive"
 
     if ! ledger_contains "$hermes_ledger"; then
       ledger_add "$hermes_ledger"
@@ -867,33 +784,24 @@ do_save() {
 
   check_qemu
 
-  if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
-    patch_setup
-    ensure_openclaw_repo_archive
-  fi
-
-  create_copy_bundle
-
-  echo ""
-  echo "==> Done. Output files:"
-  ls -lh "$OUTPUT_DIR/"*.tar.gz 2>/dev/null || echo "  (none)"
+  echo "==> Bundle files:"
+  ls -lh "$bundle_dir"
   echo ""
   echo "Copy this directory to the airgapped machine:"
-  echo "  $(copy_bundle_dir)"
+  echo "  $bundle_dir"
   echo "Then run:"
-  echo "  cd $(copy_bundle_dir)"
+  echo "  cd $bundle_dir"
   echo "  ./airgapped.sh --load --arch $ARCH"
 
   offer_cleanup_after_save
 }
-
 do_load() {
   ensure_engine_ready "$LOAD_ENGINE" "--load"
 
   find_file() {
     local pattern="$1"
     local found=""
-    for dir in "$OUTPUT_DIR" "$PWD" "$SCRIPT_DIR"; do
+    for dir in "$PWD" "$SCRIPT_DIR" "$SCRIPT_DIR/copy"; do
       found="$(compgen -G "$dir/$pattern" 2>/dev/null | head -1)" && break
     done
     echo "$found"
