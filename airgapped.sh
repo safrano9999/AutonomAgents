@@ -33,13 +33,13 @@ Modes:
   --patch      Only patch openclaw/scripts/docker/setup.sh
 
 Options:
-  --arch ARCH                Platform, e.g. linux/arm64 or linux/amd64
+  --arch ARCH                Platform (required for --save), e.g. linux/arm64
   --openclaw-version VER     OpenClaw version or "latest" (default: auto)
   --hermes-version VER       Hermes version or "latest" (default: auto)
 
 Examples:
   ./airgapped.sh --save --arch linux/arm64
-  ./airgapped.sh --load --arch linux/arm64
+  ./airgapped.sh --load
   ./airgapped.sh --patch
 USAGE
   exit 1
@@ -63,17 +63,21 @@ done
 mkdir -p ./copy
 
 ARCH_SUFFIX=""
-if [[ "$MODE" == "save" || "$MODE" == "load" ]]; then
-  [[ -z "$ARCH" ]] && { echo "ERROR: --arch required (e.g. linux/arm64)" >&2; usage; }
+VALID_ARCHS="amd64 arm64 arm s390x ppc64le riscv64"
+
+if [[ "$MODE" == "save" ]]; then
+  [[ -z "$ARCH" ]] && { echo "ERROR: --arch required for --save (e.g. linux/arm64)" >&2; usage; }
   ARCH_SUFFIX="${ARCH#*/}"
-  VALID_ARCHS="amd64 arm64 arm s390x ppc64le riscv64"
   if ! echo "$VALID_ARCHS" | grep -qw "$ARCH_SUFFIX"; then
     echo "ERROR: Invalid architecture '$ARCH_SUFFIX'" >&2
     echo "  Valid: $VALID_ARCHS" >&2
     exit 1
   fi
+elif [[ "$MODE" == "load" ]]; then
+  if [[ -n "$ARCH" ]]; then
+    echo "==> --arch is ignored for --load (using archives as-is)"
+  fi
 fi
-
 fetch_latest_gh_version() {
   local owner_repo="$1"
   local tag
@@ -130,18 +134,27 @@ detect_version_from_archives() {
   local prefix="$1"
   local latest=""
   local f
+
   for dir in "$PWD" "$SCRIPT_DIR" "$SCRIPT_DIR/copy"; do
-    for f in "$dir"/${prefix}_${ARCH_SUFFIX}_v*.tar.gz; do
+    for f in "$dir"/${prefix}_*_v*.tar.gz; do
       [[ -f "$f" ]] || continue
-      local base ver
+      local base arch ver
       base="$(basename "$f")"
-      ver="${base#${prefix}_${ARCH_SUFFIX}_v}"
+      arch="${base#${prefix}_}"
+      arch="${arch%%_v*}"
+      ver="${base#${prefix}_${arch}_v}"
       ver="${ver%.tar.gz}"
+
+      if [[ -n "$ARCH_SUFFIX" && "$arch" != "$ARCH_SUFFIX" ]]; then
+        continue
+      fi
+
       if [[ -z "$latest" || "$ver" > "$latest" ]]; then
         latest="$ver"
       fi
     done
   done
+
   echo "$latest"
 }
 
@@ -530,7 +543,7 @@ do_save() {
   echo "Then run:"
   echo "  cd $bundle_dir"
   echo "  tar -xf $helper_tar"
-  echo "  ./airgapped.sh --load --arch $ARCH"
+  echo "  ./airgapped.sh --load"
 
   offer_cleanup_after_save
 }
@@ -554,7 +567,7 @@ do_load() {
       echo "==> OpenClaw v$OPENCLAW_VERSION already deployed, no update needed"
     else
       local oc_image_tar
-      oc_image_tar="$(find_file "openclaw_${ARCH_SUFFIX}_v${OPENCLAW_VERSION}.tar.gz")"
+      oc_image_tar="$(find_file "openclaw_*_v${OPENCLAW_VERSION}.tar.gz")"
 
       local oc_version_tag="v${OPENCLAW_VERSION}"
 
@@ -565,7 +578,7 @@ do_load() {
           echo "==> Loading openclaw image from $oc_image_tar"
           gunzip -c "$oc_image_tar" | $LOAD_ENGINE load
         else
-          echo "ERROR: No openclaw image tar found (expected openclaw_${ARCH_SUFFIX}_v${OPENCLAW_VERSION}.tar.gz)" >&2
+          echo "ERROR: No openclaw image tar found (expected openclaw_*_v${OPENCLAW_VERSION}.tar.gz)" >&2
           exit 1
         fi
 
@@ -604,7 +617,7 @@ do_load() {
       echo "==> Hermes v$HERMES_VERSION already deployed, no update needed"
     else
       local hermes_tar
-      hermes_tar="$(find_file "hermes_${ARCH_SUFFIX}_v${HERMES_VERSION}.tar.gz")"
+      hermes_tar="$(find_file "hermes_*_v${HERMES_VERSION}.tar.gz")"
 
       local hermes_tag
       if [[ "$HERMES_VERSION" == "latest" ]]; then
@@ -621,7 +634,7 @@ do_load() {
           echo "==> Loading hermes image from $hermes_tar"
           gunzip -c "$hermes_tar" | $LOAD_ENGINE load
         else
-          echo "WARNING: No hermes image tar found (expected hermes_${ARCH_SUFFIX}_v${HERMES_VERSION}.tar.gz)"
+          echo "WARNING: No hermes image tar found (expected hermes_*_v${HERMES_VERSION}.tar.gz)"
         fi
 
         if ensure_hermes_tags_from_version "$LOAD_ENGINE" "$hermes_source_ref" "$hermes_tag"; then

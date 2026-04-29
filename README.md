@@ -29,7 +29,7 @@ Airgapped machine:
 ```bash
 cd copy
 tar -xf extract_me_<timestamp>.tar
-./airgapped.sh --load --arch linux/arm64
+./airgapped.sh --load
 ```
 
 `--load` imports images and patches setup files. It does **not** start containers automatically.
