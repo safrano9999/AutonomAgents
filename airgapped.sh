@@ -286,17 +286,22 @@ run_setup_dialog() {
   fi
 
   echo ""
-  echo "Container engine for pulling/saving (this machine):"
-  SAVE_ENGINE="$(ask_choice "  Options: 1) podman  2) docker (default)" "docker" "podman" "docker")"
-
-  echo "Container engine for loading/deploying (airgapped machine):"
-  LOAD_ENGINE="$(ask_choice "  Options: 1) podman  2) docker (default)" "docker" "podman" "docker")"
+  if [[ "$MODE" == "save" ]]; then
+    echo "Container engine for pulling/saving (this machine):"
+    SAVE_ENGINE="$(ask_choice "" "docker" "docker" "podman")"
+  else
+    echo "Container engine for loading/deploying (airgapped machine):"
+    LOAD_ENGINE="$(ask_choice "" "docker" "docker" "podman")"
+  fi
 
   echo ""
   echo "  Hermes Agent:    $ENABLE_HERMES"
   echo "  OpenClaw:        $ENABLE_OPENCLAW"
-  echo "  Pull engine:     $SAVE_ENGINE"
-  echo "  Deploy engine:   $LOAD_ENGINE"
+  if [[ "$MODE" == "save" ]]; then
+    echo "  Pull engine:     $SAVE_ENGINE"
+  else
+    echo "  Deploy engine:   $LOAD_ENGINE"
+  fi
   echo ""
 
 }
