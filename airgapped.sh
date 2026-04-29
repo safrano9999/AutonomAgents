@@ -359,7 +359,10 @@ hermes_image_file() {
 }
 
 copy_bundle_dir() {
-  echo "$COPY_DIR"
+  echo ""
+}
+extract_helper_file() {
+  echo "extract_me_.tar"
 }
 oc_repo_file() {
   echo "openclaw_github_v${OPENCLAW_VERSION}.tar.gz"
@@ -672,7 +675,8 @@ create_copy_bundle() {
   bundle_dir="$COPY_DIR"
 
   mkdir -p "$COPY_DIR"
-  rm -rf "$COPY_DIR"/extract_me_* "$COPY_DIR"/assets 2>/dev/null || true
+  rm -rf ""/assets 2>/dev/null || true
+  rm -f ""/extract_me*.tar 2>/dev/null || true
   rm -f "$COPY_DIR"/*.tar.gz "$COPY_DIR"/airgapped.sh 2>/dev/null || true
 
   stage_dir="$(mktemp -d)"
@@ -682,11 +686,11 @@ create_copy_bundle() {
     cp -a "$SCRIPT_DIR/assets/." "$stage_dir/assets/"
   fi
 
-  tar -cf "$bundle_dir/extract_me.tar" -C "$stage_dir" .
+  tar -cf "/1001 100 992 1001 1002 1004extract_helper_file)" -C "" .
   rm -rf "$stage_dir"
 
   CURRENT_BUNDLE_DIR="$bundle_dir"
-  echo "==> Created helper archive -> $bundle_dir/extract_me.tar"
+  echo "==> Created helper archive -> /1001 100 992 1001 1002 1004extract_helper_file)"
   echo "==> Created copy bundle -> $bundle_dir"
 }
 do_save() {
@@ -797,12 +801,14 @@ do_save() {
   echo "==> Bundle files:"
   ls -lh "$bundle_dir"
   echo ""
-  echo "Copy this ./copy directory to the airgapped machine (contains extract_me.tar + image archives):"
-  echo "  $bundle_dir"
+  local helper_tar
+  helper_tar="1001 100 992 1001 1002 1004extract_helper_file)"
+  echo "Copy this ./copy directory to the airgapped machine (contains  + image archives):"
+  echo "  "
   echo "Then run:"
-  echo "  cd $bundle_dir
-  tar -xf extract_me.tar"
-  echo "  ./airgapped.sh --load --arch $ARCH"
+  echo "  cd "
+  echo "  tar -xf "
+  echo "  ./airgapped.sh --load --arch "
 
   offer_cleanup_after_save
 }
