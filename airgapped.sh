@@ -204,12 +204,12 @@ ask_choice() {
   local options=("$@")
   local reply
   while true; do
-    [[ -n "$prompt" ]] && echo "$prompt"
+    [[ -n "$prompt" ]] && echo "$prompt" >&2
     for i in "${!options[@]}"; do
       if [[ "${options[$i]}" == "$default_value" ]]; then
-        echo "  $((i+1))) ${options[$i]} (default)"
+        echo "  $((i+1))) ${options[$i]} (default)" >&2
       else
-        echo "  $((i+1))) ${options[$i]}"
+        echo "  $((i+1))) ${options[$i]}" >&2
       fi
     done
     read -rp "Choice [1-${#options[@]}] (Enter=default $default_value): " reply
@@ -231,7 +231,7 @@ ask_choice() {
       fi
     done
 
-    echo "  Invalid choice. Use number, name, or Enter for default."
+    echo "  Invalid choice. Use number, name, or Enter for default." >&2
   done
 }
 
@@ -242,8 +242,8 @@ run_setup_dialog() {
   echo "======================================"
   echo ""
 
-  ENABLE_HERMES="$(ask_yes_no "Enable Hermes Agent? [yes/no]:")"
-  ENABLE_OPENCLAW="$(ask_yes_no "Enable OpenClaw? [yes/no]:")"
+  ENABLE_HERMES="$(ask_yes_no "Enable Hermes Agent? [yes/no]:" "yes")"
+  ENABLE_OPENCLAW="$(ask_yes_no "Enable OpenClaw? [yes/no]:" "yes")"
 
   if [[ "$ENABLE_HERMES" == "no" && "$ENABLE_OPENCLAW" == "no" ]]; then
     echo ""
@@ -269,7 +269,6 @@ run_setup_dialog() {
   fi
   echo ""
 }
-
 if [[ "$MODE" != "patch" ]]; then
   run_setup_dialog
 
