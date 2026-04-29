@@ -20,6 +20,7 @@ Tooling for exporting and loading **OpenClaw** + **Hermes** in airgapped environ
 
 
 - `airgapped.sh`
+- `assets/setup-offline.patch`
 - `openclaw_<arch>_v<version>.tar.gz`
 - `hermes_<arch>_v<version>.tar.gz`
 - `openclaw_github_v<version>.tar.gz`
