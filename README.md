@@ -1,73 +1,92 @@
 # AutonomAgents - Airgapped Deployment
 
-Tooling for building, exporting, and deploying container images to airgapped machines.
+Tooling for exporting and loading **OpenClaw** + **Hermes** in airgapped environments.
 
-Supports **OpenClaw** (image + repo + patched setup) and **Hermes Agent** (image only).
+## ✅ What this script does
 
-## Prerequisites
+- Exports versioned archives on a connected machine (`--save`)
+- Loads them on an airgapped machine (`--load`)
+- Patches `openclaw/scripts/docker/setup.sh` for offline use (`--patch`)
+- Keeps stable runtime tags:
+  - `openclaw:local` + `openclaw:v<OPENCLAW_VERSION>`
+  - `nousresearch/hermes-agent:latest` + `nousresearch/hermes-agent:v<HERMES_VERSION>`
 
-- `podman` (connected machine) / `docker` (airgapped machine) — or configure in `airgap.conf`
-- `git`, `python3`, `gzip`
+## 📦 Output files (`output/`)
 
-### Cross-Architecture Builds (e.g. amd64 → arm64)
+- `openclaw_<arch>_v<version>.tar.gz`
+- `openclaw_github_v<version>.tar.gz`
+- `hermes_<arch>_v<version>.tar.gz`
+- `airgap_tools_<arch>_<timestamp>.tar.gz`  👈 includes helper files + `extract.sh`
 
-If the build machine has a **different CPU architecture** than the target (e.g. building `linux/arm64` images on an `amd64` host), you need QEMU user-space emulation. **This requires root privileges.**
+## 🚀 Quick Start
 
-**Option A — System package (Debian/Ubuntu):**
-```bash
-sudo apt install qemu-user-static
-sudo systemctl restart systemd-binfmt
-```
-
-**Option B — Via container (rootless, but needs initial privileged run):**
-```bash
-sudo podman run --privileged --rm tonistiigi/binfmt --install arm64
-# or with docker:
-sudo docker run --privileged --rm tonistiigi/binfmt --install arm64
-```
-
-After this, `podman build --platform linux/arm64` works on amd64 hosts (and vice versa).
-
-The `airgapped.sh` script checks for this automatically and will tell you if it's missing.
-
-> **Note:** Same-architecture builds (e.g. arm64 → arm64) do not need QEMU.
-
-## Quick Start
+### 1) Connected machine: export
 
 ```bash
-# 1. Connected machine — build and export:
-./airgapped.sh --save --arch linux/arm64 --openclaw-version 2026.4.26
-
-# 2. Transfer output/ files to airgapped machine (USB, scp, etc.)
-
-# 3. Airgapped machine — load and deploy:
-./airgapped.sh --load --arch linux/arm64 --openclaw-version 2026.4.26
-
-# 4. Run openclaw setup:
-cd openclaw && OPENCLAW_IMAGE=openclaw:local bash scripts/docker/setup.sh
+./airgapped.sh --save --arch linux/arm64 --openclaw-version 2026.4.26 --hermes-version 2026.4.23
 ```
 
-## Configuration
+### 2) Transfer to airgapped machine
 
-Edit `airgap.conf`:
+Copy the `output/*.tar.gz` files.
+
+### 3) On airgapped machine: unpack helper archive
 
 ```bash
-SAVE_ENGINE="podman"     # engine on connected machine
-LOAD_ENGINE="docker"     # engine on airgapped machine
-HERMES_IMAGE="hermes-agent:latest"
+cd output
+tar -xzf airgap_tools_<arch>_<timestamp>.tar.gz
+./extract.sh ..
 ```
 
-## Duplicate Prevention
+`extract.sh` organizes files to:
 
-- `output/.ledger` tracks exported `version:arch` combinations
-- Re-running `--save` for the same version skips the export
-- Container engine caches base image layers, only deltas are pulled
-- Use `--force` to override
+- `../airgapped.sh`
+- `../airgap.conf`
+- `../patches/`
+- `../output/*.tar.gz`
+- extracts repo archive to `../openclaw`
 
-## Output Files
+### 4) Load images
 
-| File | Contents |
-|------|----------|
-| `openclaw_{arch}_v{version}.tar.gz` | Container image |
-| `openclaw_github_v{version}.tar.gz` | Repository snapshot |
-| `hermes_{arch}_v{version}.tar.gz` | Hermes container image |
+```bash
+cd ..
+./airgapped.sh --load --arch linux/arm64 --openclaw-version 2026.4.26 --hermes-version 2026.4.23
+```
+
+### 5) Start OpenClaw setup
+
+```bash
+cd openclaw
+OPENCLAW_IMAGE=openclaw:local bash scripts/docker/setup.sh
+```
+
+## 🔁 Load behavior (important)
+
+`--load` checks existing version tags first:
+
+- OpenClaw: `openclaw:v<OPENCLAW_VERSION>`
+- Hermes: `nousresearch/hermes-agent:v<HERMES_VERSION>`
+
+If already present, image import is skipped (no overwrite).
+
+## 🧩 Patch-only mode
+
+```bash
+./airgapped.sh --patch
+```
+
+- Auto-clones `openclaw/` if missing
+- Safe to run repeatedly (`already patched`)
+
+## 🧹 Cleanup options
+
+At the end of `--save` and `--load`, the script offers optional cleanup.
+
+- `--save` cleanup: remove exported OpenClaw/Hermes images + prune dangling layers
+- `--load` cleanup: remove redundant legacy versions while keeping current runtime/version tags
+
+## 📝 Notes
+
+- Engine is selected fresh per run (no persisted legacy config flow).
+- Default engine choice is `docker` (press Enter).
+- Use `--force` to re-export even if ledger marks versions as already exported.
