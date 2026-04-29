@@ -773,9 +773,11 @@ do_save() {
     oc_version_tag="v${OPENCLAW_VERSION}"
 
     local oc_ready=false
-    if ensure_openclaw_tags_from_version "$SAVE_ENGINE" "openclaw:${oc_version_tag}" "$oc_version_tag"; then
+    if $SAVE_ENGINE image inspect "openclaw:${oc_version_tag}" >/dev/null 2>&1; then
+      ensure_openclaw_tags_from_version "$SAVE_ENGINE" "openclaw:${oc_version_tag}" "$oc_version_tag" || true
       oc_ready=true
-    elif ensure_openclaw_tags_from_version "$SAVE_ENGINE" "openclaw:local" "$oc_version_tag"; then
+    elif $SAVE_ENGINE image inspect "localhost/openclaw:${oc_version_tag}" >/dev/null 2>&1; then
+      ensure_openclaw_tags_from_version "$SAVE_ENGINE" "localhost/openclaw:${oc_version_tag}" "$oc_version_tag" || true
       oc_ready=true
     fi
 
@@ -837,11 +839,14 @@ do_save() {
     hermes_save_ref="${hermes_repo_short}:${hermes_tag}"
 
     local hermes_ready=false
-    if ensure_hermes_tags_from_version "$SAVE_ENGINE" "${HERMES_REGISTRY}:${hermes_tag}" "$hermes_tag"; then
+    if $SAVE_ENGINE image inspect "${hermes_repo_short}:${hermes_tag}" >/dev/null 2>&1; then
+      ensure_hermes_tags_from_version "$SAVE_ENGINE" "${hermes_repo_short}:${hermes_tag}" "$hermes_tag" || true
       hermes_ready=true
-    elif ensure_hermes_tags_from_version "$SAVE_ENGINE" "${hermes_repo_short}:${hermes_tag}" "$hermes_tag"; then
+    elif $SAVE_ENGINE image inspect "${HERMES_REGISTRY}:${hermes_tag}" >/dev/null 2>&1; then
+      ensure_hermes_tags_from_version "$SAVE_ENGINE" "${HERMES_REGISTRY}:${hermes_tag}" "$hermes_tag" || true
       hermes_ready=true
-    elif ensure_hermes_tags_from_version "$SAVE_ENGINE" "${hermes_repo_short}:latest" "$hermes_tag"; then
+    elif $SAVE_ENGINE image inspect "localhost/${hermes_repo_short}:${hermes_tag}" >/dev/null 2>&1; then
+      ensure_hermes_tags_from_version "$SAVE_ENGINE" "localhost/${hermes_repo_short}:${hermes_tag}" "$hermes_tag" || true
       hermes_ready=true
     fi
 
