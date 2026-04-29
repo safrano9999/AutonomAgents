@@ -411,7 +411,7 @@ create_copy_bundle() {
   helper_tar="$(extract_helper_file)"
 
   mkdir -p "$COPY_DIR"
-  rm -rf "$COPY_DIR"/* 2>/dev/null || true
+  rm -f "$COPY_DIR"/extract_me_*.tar 2>/dev/null || true
 
   stage_dir="$(mktemp -d)"
   cp -f "$SCRIPT_DIR/airgapped.sh" "$stage_dir/airgapped.sh"
@@ -800,11 +800,20 @@ do_save() {
       exit 1
     fi
 
-    echo "==> Saving openclaw image -> $oc_archive"
-    $SAVE_ENGINE save "openclaw:local" | gzip > "$oc_archive"
+    if [[ -f "$oc_archive" ]]; then
+      echo "==> OpenClaw archive already present, skipping export: $(basename "$oc_archive")"
+    else
+      echo "==> Saving openclaw image -> $oc_archive"
+      $SAVE_ENGINE save "openclaw:local" | gzip > "$oc_archive"
+    fi
 
     patch_setup
-    ensure_openclaw_repo_archive "$bundle_dir"
+    local oc_repo_archive="$bundle_dir/$(oc_repo_file)"
+    if [[ -f "$oc_repo_archive" ]]; then
+      echo "==> OpenClaw repo archive already present, skipping export: $(basename "$oc_repo_archive")"
+    else
+      ensure_openclaw_repo_archive "$bundle_dir"
+    fi
 
     if ! ledger_contains "$oc_ledger"; then
       ledger_add "$oc_ledger"
@@ -851,8 +860,12 @@ do_save() {
       exit 1
     fi
 
-    echo "==> Saving hermes image -> $hermes_archive"
-    $SAVE_ENGINE save "$hermes_save_ref" | gzip > "$hermes_archive"
+    if [[ -f "$hermes_archive" ]]; then
+      echo "==> Hermes archive already present, skipping export: $(basename "$hermes_archive")"
+    else
+      echo "==> Saving hermes image -> $hermes_archive"
+      $SAVE_ENGINE save "$hermes_save_ref" | gzip > "$hermes_archive"
+    fi
 
     if ! ledger_contains "$hermes_ledger"; then
       ledger_add "$hermes_ledger"
