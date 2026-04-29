@@ -379,6 +379,10 @@ oc_repo_file() {
 hermes_image_file() {
   echo "hermes_${ARCH_SUFFIX}_v${HERMES_VERSION}.tar.gz"
 }
+tools_archive_file() {
+  local oc_ver="${OPENCLAW_VERSION:-none}"
+  echo "airgap_tools_${ARCH_SUFFIX}_v${oc_ver}.tar.gz"
+}
 
 # --- ledger: duplicate prevention ---
 ledger_contains() {
@@ -598,6 +602,90 @@ offer_cleanup_after_load() {
   cleanup_prune_layers_for_load "$engine"
 }
 
+create_tools_archive() {
+  local bundle_file
+  bundle_file="$(tools_archive_file)"
+
+  local stage_dir
+  stage_dir="$(mktemp -d)"
+
+  cp "$SCRIPT_DIR/airgapped.sh" "$stage_dir/airgapped.sh"
+
+  if [[ -f "$SCRIPT_DIR/airgap.conf" ]]; then
+    cp "$SCRIPT_DIR/airgap.conf" "$stage_dir/airgap.conf"
+  else
+    cat > "$stage_dir/airgap.conf" <<EOF
+# Optional local overrides for airgapped.sh
+SAVE_ENGINE="docker"
+LOAD_ENGINE="docker"
+OPENCLAW_REGISTRY="${OPENCLAW_REGISTRY}"
+HERMES_REGISTRY="${HERMES_REGISTRY}"
+OPENCLAW_REPO="${OPENCLAW_REPO}"
+EOF
+  fi
+
+  mkdir -p "$stage_dir/patches"
+  if [[ -d "$SCRIPT_DIR/patches" ]]; then
+    cp -a "$SCRIPT_DIR/patches/." "$stage_dir/patches/"
+  fi
+
+  cat > "$stage_dir/extract.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TARGET_DIR="${1:-..}"
+OUTPUT_TARGET="$TARGET_DIR/output"
+
+mkdir -p "$TARGET_DIR"
+mkdir -p "$OUTPUT_TARGET"
+
+echo "==> Organizing payload into: $TARGET_DIR"
+
+cp -f "$SCRIPT_DIR/airgapped.sh" "$TARGET_DIR/airgapped.sh"
+cp -f "$SCRIPT_DIR/airgap.conf" "$TARGET_DIR/airgap.conf"
+
+if [[ -d "$SCRIPT_DIR/patches" ]]; then
+  mkdir -p "$TARGET_DIR/patches"
+  cp -a "$SCRIPT_DIR/patches/." "$TARGET_DIR/patches/"
+fi
+
+for pattern in openclaw_*_v*.tar.gz hermes_*_v*.tar.gz openclaw_github_v*.tar.gz; do
+  for f in "$SCRIPT_DIR"/$pattern; do
+    [[ -f "$f" ]] || continue
+    cp -f "$f" "$OUTPUT_TARGET/"
+  done
+done
+
+repo_tar=""
+for f in "$OUTPUT_TARGET"/openclaw_github_v*.tar.gz; do
+  [[ -f "$f" ]] || continue
+  repo_tar="$f"
+done
+
+if [[ -n "$repo_tar" ]]; then
+  echo "==> Extracting repo archive: $(basename "$repo_tar") -> $TARGET_DIR"
+  tar -xzf "$repo_tar" -C "$TARGET_DIR"
+else
+  echo "WARNING: No openclaw_github_v*.tar.gz found in $OUTPUT_TARGET"
+fi
+
+echo ""
+echo "Done."
+echo "  Repo:        $TARGET_DIR/openclaw"
+echo "  Script:      $TARGET_DIR/airgapped.sh"
+echo "  Config:      $TARGET_DIR/airgap.conf"
+echo "  Payload dir: $OUTPUT_TARGET"
+EOF
+
+  chmod +x "$stage_dir/extract.sh"
+
+  tar -czf "$OUTPUT_DIR/$bundle_file" -C "$stage_dir" .
+  rm -rf "$stage_dir"
+
+  echo "==> Created tools archive -> $bundle_file"
+}
+
 # ============================================================
 #  --save: pull from registry and save (connected machine)
 # ============================================================
@@ -625,6 +713,8 @@ do_save() {
     [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]] && echo "    Hermes:   v$HERMES_VERSION"
     echo "    Use --force to re-export."
     echo ""
+    mkdir -p "$OUTPUT_DIR"
+    create_tools_archive
     return 0
   fi
 
@@ -724,11 +814,16 @@ do_save() {
   # QEMU hint (non-fatal for pull, but good to know)
   check_qemu
 
+  create_tools_archive
+
   echo ""
   echo "==> Done. Output files:"
   ls -lh "$OUTPUT_DIR/"*.tar.gz 2>/dev/null || echo "  (none)"
   echo ""
   echo "Transfer files to the airgapped machine, then run:"
+  echo "  tar -xzf $(tools_archive_file)"
+  echo "  ./extract.sh .."
+  echo "  cd .."
   echo "  ./airgapped.sh --load --arch $ARCH"
 
   offer_cleanup_after_save
