@@ -676,8 +676,10 @@ create_copy_bundle() {
 
   cp -f "$SCRIPT_DIR/airgapped.sh" "$bundle_dir/airgapped.sh"
 
-  mkdir -p "$bundle_dir/assets"
-  cp -f "$SCRIPT_DIR/assets/setup-offline.patch" "$bundle_dir/assets/setup-offline.patch"
+  if [[ -d "/assets" ]]; then
+    mkdir -p "/assets"
+    cp -a "/assets/." "/assets/"
+  fi
 
   CURRENT_BUNDLE_DIR="$bundle_dir"
   echo "==> Created copy bundle -> $bundle_dir"

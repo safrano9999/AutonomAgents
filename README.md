@@ -21,6 +21,7 @@ Tooling for exporting and loading **OpenClaw** + **Hermes** in airgapped environ
 
 - `airgapped.sh`
 - `assets/setup-offline.patch`
+- `assets/hermes-docker-compose.yml`
 - `openclaw_<arch>_v<version>.tar.gz`
 - `hermes_<arch>_v<version>.tar.gz`
 - `openclaw_github_v<version>.tar.gz`
@@ -28,6 +29,7 @@ Tooling for exporting and loading **OpenClaw** + **Hermes** in airgapped environ
 Patch source file:
 
 - `assets/setup-offline.patch`
+- `assets/hermes-docker-compose.yml`
 
 ## 🚀 Quick Start
 

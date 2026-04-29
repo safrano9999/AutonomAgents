@@ -1,0 +1,39 @@
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    pull_policy: never
+    container_name: hermes
+    restart: unless-stopped
+    command: gateway run
+    ports:
+      - "8642:8642"
+    volumes:
+      - /Volumes/SOURCES/hermes_data:/opt/data
+      - /Volumes/SOURCES/VAULT:/opt/VAULT
+    environment:
+      - PATH=/opt/hermes/.venv/bin:/opt/data/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    networks:
+      - hermes-net
+
+  dashboard:
+    image: nousresearch/hermes-agent:latest
+    pull_policy: never
+    container_name: hermes-dashboard
+    restart: unless-stopped
+    command: dashboard --host 0.0.0.0 --port 9119 --insecure
+    ports:
+      - "9119:9119"
+    volumes:
+      - /Volumes/SOURCES/hermes_data:/opt/data
+      - /Volumes/SOURCES/VAULT:/opt/VAULT
+    environment:
+      - GATEWAY_HEALTH_URL=http://hermes:8642
+      - PATH=/opt/hermes/.venv/bin:/opt/data/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin 
+    networks:
+      - hermes-net
+    depends_on:
+      - hermes
+
+networks:
+  hermes-net:
+    driver: bridge
