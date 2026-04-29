@@ -597,6 +597,9 @@ create_copy_bundle() {
   local bundle_dir
   bundle_dir="$(copy_bundle_dir)"
 
+  mkdir -p "$COPY_DIR"
+  find "$COPY_DIR" -mindepth 1 -maxdepth 1 -type d -name 'extract_me_*' -exec rm -rf {} + 2>/dev/null || true
+
   mkdir -p "$bundle_dir"
   cp -f "$SCRIPT_DIR/airgapped.sh" "$bundle_dir/airgapped.sh"
 
@@ -628,31 +631,42 @@ create_copy_bundle() {
 
   echo "==> Created copy bundle -> $bundle_dir"
 }
-
 do_save() {
-  local needs_work=false
-
-  if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
-    local oc_ledger="openclaw:${OPENCLAW_VERSION}:${ARCH_SUFFIX}"
-    if ! ledger_contains "$oc_ledger"; then
-      needs_work=true
-    fi
-  fi
-
-  if [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]]; then
-    local hermes_ledger="hermes:${HERMES_VERSION}:${ARCH_SUFFIX}"
-    if ! ledger_contains "$hermes_ledger"; then
-      needs_work=true
-    fi
-  fi
-
   mkdir -p "$OUTPUT_DIR"
 
-  if [[ "$FORCE" != true && "$needs_work" == false ]]; then
+  local need_any_export=false
+
+  local oc_file=""
+  local oc_archive=""
+  local oc_ledger=""
+  if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
+    oc_file="$(oc_image_file)"
+    oc_archive="$OUTPUT_DIR/$oc_file"
+    oc_ledger="openclaw:${OPENCLAW_VERSION}:${ARCH_SUFFIX}"
+
+    if [[ "$FORCE" == true || ! -f "$oc_archive" ]]; then
+      need_any_export=true
+    fi
+  fi
+
+  local hermes_file=""
+  local hermes_archive=""
+  local hermes_ledger=""
+  if [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]]; then
+    hermes_file="$(hermes_image_file)"
+    hermes_archive="$OUTPUT_DIR/$hermes_file"
+    hermes_ledger="hermes:${HERMES_VERSION}:${ARCH_SUFFIX}"
+
+    if [[ "$FORCE" == true || ! -f "$hermes_archive" ]]; then
+      need_any_export=true
+    fi
+  fi
+
+  if [[ "$FORCE" != true && "$need_any_export" == false ]]; then
     echo ""
-    echo "==> No update needed. All versions already exported."
-    [[ "$ENABLE_OPENCLAW" == "yes" ]] && echo "    OpenClaw: v$OPENCLAW_VERSION"
-    [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]] && echo "    Hermes:   v$HERMES_VERSION"
+    echo "==> No update needed. Archives already exist."
+    [[ "$ENABLE_OPENCLAW" == "yes" ]] && echo "    OpenClaw archive: $oc_file"
+    [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]] && echo "    Hermes archive:   $hermes_file"
     echo "    Use --force to re-export."
     echo ""
 
@@ -665,29 +679,45 @@ do_save() {
   fi
 
   if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
-    local oc_ledger="openclaw:${OPENCLAW_VERSION}:${ARCH_SUFFIX}"
+    local oc_version_tag="v${OPENCLAW_VERSION}"
 
-    if [[ "$FORCE" != true ]] && ledger_contains "$oc_ledger"; then
-      echo "==> OpenClaw v$OPENCLAW_VERSION already exported, skipping"
+    if [[ "$FORCE" != true && -f "$oc_archive" ]]; then
+      echo "==> OpenClaw archive already present, skipping export: $oc_file"
     else
-      local oc_pull_tag
-      if [[ "$OPENCLAW_VERSION" == "latest" ]]; then
-        oc_pull_tag="latest"
-      else
-        oc_pull_tag="${OPENCLAW_VERSION}-slim-${ARCH_SUFFIX}"
+      local oc_ready=false
+
+      if ensure_openclaw_tags_from_version "$SAVE_ENGINE" "openclaw:${oc_version_tag}" "$oc_version_tag"; then
+        oc_ready=true
+      elif ensure_openclaw_tags_from_version "$SAVE_ENGINE" "openclaw:local" "$oc_version_tag"; then
+        oc_ready=true
       fi
-      local oc_pull_image="${OPENCLAW_REGISTRY}:${oc_pull_tag}"
 
-      echo "==> Pulling openclaw: $oc_pull_image (platform $ARCH)"
-      $SAVE_ENGINE pull --platform "$ARCH" "$oc_pull_image"
+      if [[ "$oc_ready" == true ]]; then
+        echo "==> Reusing local OpenClaw image (no pull): openclaw:$oc_version_tag / openclaw:local"
+      else
+        local oc_pull_tag
+        if [[ "$OPENCLAW_VERSION" == "latest" ]]; then
+          oc_pull_tag="latest"
+        else
+          oc_pull_tag="${OPENCLAW_VERSION}-slim-${ARCH_SUFFIX}"
+        fi
+        local oc_pull_image="${OPENCLAW_REGISTRY}:${oc_pull_tag}"
 
-      ensure_openclaw_tags_from_version "$SAVE_ENGINE" "$oc_pull_image" "v${OPENCLAW_VERSION}" || true
+        echo "==> Pulling openclaw: $oc_pull_image (platform $ARCH)"
+        $SAVE_ENGINE pull --platform "$ARCH" "$oc_pull_image"
+        ensure_openclaw_tags_from_version "$SAVE_ENGINE" "$oc_pull_image" "$oc_version_tag" || true
+      fi
 
-      local oc_file
-      oc_file="$(oc_image_file)"
+      if ! $SAVE_ENGINE image inspect "openclaw:local" >/dev/null 2>&1; then
+        echo "ERROR: openclaw:local missing after prepare step" >&2
+        exit 1
+      fi
+
       echo "==> Saving openclaw image -> $oc_file"
-      $SAVE_ENGINE save "openclaw:local" | gzip > "$OUTPUT_DIR/$oc_file"
+      $SAVE_ENGINE save "openclaw:local" | gzip > "$oc_archive"
+    fi
 
+    if ! ledger_contains "$oc_ledger"; then
       ledger_add "$oc_ledger"
     fi
   else
@@ -695,28 +725,48 @@ do_save() {
   fi
 
   if [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]]; then
-    local hermes_ledger="hermes:${HERMES_VERSION}:${ARCH_SUFFIX}"
-
-    if [[ "$FORCE" != true ]] && ledger_contains "$hermes_ledger"; then
-      echo "==> Hermes v$HERMES_VERSION already exported, skipping"
+    local hermes_tag
+    if [[ "$HERMES_VERSION" == "latest" ]]; then
+      hermes_tag="latest"
     else
-      local hermes_pull_tag
-      if [[ "$HERMES_VERSION" == "latest" ]]; then
-        hermes_pull_tag="latest"
-      else
-        hermes_pull_tag="v${HERMES_VERSION}"
+      hermes_tag="v${HERMES_VERSION}"
+    fi
+
+    local hermes_repo_short="${HERMES_REGISTRY#docker.io/}"
+    local hermes_save_ref="${hermes_repo_short}:${hermes_tag}"
+
+    if [[ "$FORCE" != true && -f "$hermes_archive" ]]; then
+      echo "==> Hermes archive already present, skipping export: $hermes_file"
+    else
+      local hermes_ready=false
+
+      if ensure_hermes_tags_from_version "$SAVE_ENGINE" "${HERMES_REGISTRY}:${hermes_tag}" "$hermes_tag"; then
+        hermes_ready=true
+      elif ensure_hermes_tags_from_version "$SAVE_ENGINE" "${hermes_repo_short}:${hermes_tag}" "$hermes_tag"; then
+        hermes_ready=true
+      elif ensure_hermes_tags_from_version "$SAVE_ENGINE" "${hermes_repo_short}:latest" "$hermes_tag"; then
+        hermes_ready=true
       fi
-      local hermes_pull_image="${HERMES_REGISTRY}:${hermes_pull_tag}"
 
-      echo "==> Pulling hermes: $hermes_pull_image (platform $ARCH)"
-      $SAVE_ENGINE pull --platform "$ARCH" "$hermes_pull_image"
-      ensure_hermes_tags_from_version "$SAVE_ENGINE" "$hermes_pull_image" "$hermes_pull_tag" || true
+      if [[ "$hermes_ready" == true ]]; then
+        echo "==> Reusing local Hermes image (no pull): ${hermes_repo_short}:latest / ${hermes_repo_short}:${hermes_tag}"
+      else
+        local hermes_pull_image="${HERMES_REGISTRY}:${hermes_tag}"
+        echo "==> Pulling hermes: $hermes_pull_image (platform $ARCH)"
+        $SAVE_ENGINE pull --platform "$ARCH" "$hermes_pull_image"
+        ensure_hermes_tags_from_version "$SAVE_ENGINE" "$hermes_pull_image" "$hermes_tag" || true
+      fi
 
-      local hermes_file
-      hermes_file="$(hermes_image_file)"
+      if ! $SAVE_ENGINE image inspect "$hermes_save_ref" >/dev/null 2>&1; then
+        echo "ERROR: $hermes_save_ref missing after prepare step" >&2
+        exit 1
+      fi
+
       echo "==> Saving hermes image -> $hermes_file"
-      $SAVE_ENGINE save "$hermes_pull_image" | gzip > "$OUTPUT_DIR/$hermes_file"
+      $SAVE_ENGINE save "$hermes_save_ref" | gzip > "$hermes_archive"
+    fi
 
+    if ! ledger_contains "$hermes_ledger"; then
       ledger_add "$hermes_ledger"
     fi
   else
@@ -744,7 +794,6 @@ do_save() {
 
   offer_cleanup_after_save
 }
-
 do_load() {
   find_file() {
     local pattern="$1"
