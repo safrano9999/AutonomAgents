@@ -296,6 +296,59 @@ check_qemu() {
   echo "    Pulling works; local run may require qemu-user-static/binfmt."
 }
 
+ensure_engine_runtime_env() {
+  local engine="$1"
+  local uid
+  uid="$(id -u)"
+
+  if [[ "$uid" != "0" ]]; then
+    if [[ -z "${XDG_RUNTIME_DIR:-}" || "${XDG_RUNTIME_DIR}" == "/run/user/0" ]]; then
+      export XDG_RUNTIME_DIR="/run/user/${uid}"
+      echo "==> Set XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR for rootless container engine"
+    fi
+  fi
+
+  if [[ "$engine" == "docker" ]]; then
+    local version_out
+    version_out="$(docker --version 2>&1 || true)"
+    if echo "$version_out" | grep -qi 'Emulate Docker CLI using podman'; then
+      echo "==> Detected docker->podman emulation"
+    fi
+  fi
+}
+
+ensure_engine_ready() {
+  local engine="$1"
+  local phase="$2"
+
+  if ! command -v "$engine" >/dev/null 2>&1; then
+    echo "ERROR: Container engine '$engine' not found for $phase" >&2
+    exit 1
+  fi
+
+  ensure_engine_runtime_env "$engine"
+
+  local err_file
+  err_file="$(mktemp)"
+  if ! "$engine" info > /dev/null 2>"$err_file"; then
+    echo "ERROR: Container engine '$engine' is not ready for $phase" >&2
+    sed -n '1,12p' "$err_file" >&2
+
+    if [[ "$engine" == "docker" ]]; then
+      local version_out
+      version_out="$(docker --version 2>&1 || true)"
+      if echo "$version_out" | grep -qi 'Emulate Docker CLI using podman'; then
+        echo "Hint: 'docker' is podman emulation on this host." >&2
+        echo "  1) Ensure a valid user session exists (/run/user/$(id -u) writable)." >&2
+        echo "  2) Or choose podman in the setup prompt." >&2
+      fi
+    fi
+
+    rm -f "$err_file"
+    exit 1
+  fi
+  rm -f "$err_file"
+}
 oc_image_file() {
   echo "openclaw_${ARCH_SUFFIX}_v${OPENCLAW_VERSION}.tar.gz"
 }
@@ -640,6 +693,7 @@ create_copy_bundle() {
   ls -lh "$bundle_dir"
 }
 do_save() {
+  ensure_engine_ready "$SAVE_ENGINE" "--save"
   mkdir -p "$OUTPUT_DIR"
 
   local need_any_export=false
@@ -802,6 +856,7 @@ do_save() {
   offer_cleanup_after_save
 }
 do_load() {
+  ensure_engine_ready "$LOAD_ENGINE" "--load"
   find_file() {
     local pattern="$1"
     local found=""
