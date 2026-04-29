@@ -4,70 +4,65 @@ Tooling for exporting and loading **OpenClaw** + **Hermes** in airgapped environ
 
 ## ✅ What this script does
 
-- Exports versioned archives on a connected machine (`--save`)
+- Exports versioned image archives on a connected machine (`--save`)
 - Loads them on an airgapped machine (`--load`)
 - Patches `openclaw/scripts/docker/setup.sh` for offline use (`--patch`)
-- Keeps stable runtime tags:
+- Keeps required runtime tags:
   - `openclaw:local` + `openclaw:v<OPENCLAW_VERSION>`
   - `nousresearch/hermes-agent:latest` + `nousresearch/hermes-agent:v<HERMES_VERSION>`
+- Creates transfer folder: `copy/extract_me_<timestamp>/`
 
-## 📦 Output files (`output/`)
+## 📦 Output
+
+Image archives stay in `output/`:
 
 - `openclaw_<arch>_v<version>.tar.gz`
-- `openclaw_github_v<version>.tar.gz`
 - `hermes_<arch>_v<version>.tar.gz`
-- `airgap_tools_<arch>_<timestamp>.tar.gz`  👈 includes helper files + `extract.sh`
+
+Transfer bundle is created in `copy/extract_me_<timestamp>/`:
+
+- `airgapped.sh`
+- `openclaw/` (patched repo, if OpenClaw enabled)
+- selected image archives
+
+Patch source file:
+
+- `assets/openclaw-setup-airgap.patch`
 
 ## 🚀 Quick Start
 
-### 1) Connected machine: export
+### 1) Connected machine: export + bundle
 
 ```bash
-./airgapped.sh --save --arch linux/arm64 --openclaw-version 2026.4.26 --hermes-version 2026.4.23
+./airgapped.sh --save --arch linux/arm64
 ```
 
-### 2) Transfer to airgapped machine
+### 2) Copy transfer folder to airgapped machine
 
-Copy the `output/*.tar.gz` files.
+Copy the full folder `copy/extract_me_<timestamp>/`.
 
-### 3) On airgapped machine: unpack helper archive
+### 3) On airgapped machine: load
 
 ```bash
-cd output
-tar -xzf airgap_tools_<arch>_<timestamp>.tar.gz
-./extract.sh ..
+cd extract_me_<timestamp>
+./airgapped.sh --load --arch linux/arm64
 ```
 
-`extract.sh` organizes files to:
-
-- `../airgapped.sh`
-- `../airgap.conf`
-- `../patches/`
-- `../output/*.tar.gz`
-- extracts repo archive to `../openclaw`
-
-### 4) Load images
-
-```bash
-cd ..
-./airgapped.sh --load --arch linux/arm64 --openclaw-version 2026.4.26 --hermes-version 2026.4.23
-```
-
-### 5) Start OpenClaw setup
+### 4) Start OpenClaw setup
 
 ```bash
 cd openclaw
 OPENCLAW_IMAGE=openclaw:local bash scripts/docker/setup.sh
 ```
 
-## 🔁 Load behavior (important)
+## 🔁 Load behavior
 
-`--load` checks existing version tags first:
+`--load` checks version tags before importing:
 
 - OpenClaw: `openclaw:v<OPENCLAW_VERSION>`
 - Hermes: `nousresearch/hermes-agent:v<HERMES_VERSION>`
 
-If already present, image import is skipped (no overwrite).
+If already present, image import is skipped.
 
 ## 🧩 Patch-only mode
 
@@ -75,18 +70,13 @@ If already present, image import is skipped (no overwrite).
 ./airgapped.sh --patch
 ```
 
-- Auto-clones `openclaw/` if missing
-- Safe to run repeatedly (`already patched`)
+- Clones `openclaw/` automatically if missing (except in `--load` mode)
+- Re-running patch is safe (`already patched`)
+- If patch no longer matches upstream: `Patch failed. New upstream version?`
 
 ## 🧹 Cleanup options
 
-At the end of `--save` and `--load`, the script offers optional cleanup.
+At the end of `--save` and `--load`, cleanup is offered interactively.
 
-- `--save` cleanup: remove exported OpenClaw/Hermes images + prune dangling layers
-- `--load` cleanup: remove redundant legacy versions while keeping current runtime/version tags
-
-## 📝 Notes
-
-- Engine is selected fresh per run (no persisted legacy config flow).
-- Default engine choice is `docker` (press Enter).
-- Use `--force` to re-export even if ledger marks versions as already exported.
+- `--save`: removes OpenClaw/Hermes local images and dangling layers
+- `--load`: removes redundant legacy versions, keeps current tags, and prunes cache/layers
