@@ -359,7 +359,7 @@ hermes_image_file() {
 }
 
 copy_bundle_dir() {
-  echo "$COPY_DIR/extract_me_${RUN_TIMESTAMP}"
+  echo "$COPY_DIR"
 }
 oc_repo_file() {
   echo "openclaw_github_v${OPENCLAW_VERSION}.tar.gz"
@@ -578,7 +578,7 @@ ensure_openclaw_repo_for_patch() {
   if [[ ! -d "$repo_dir" ]]; then
     if [[ "$MODE" == "load" ]]; then
       echo "ERROR: openclaw/ not found for --load at $repo_dir" >&2
-      echo "  Run --load from the extract_me_<timestamp> folder so openclaw_github_v*.tar.gz can be extracted automatically." >&2
+      echo "  Run --load from ./copy so openclaw_github_v*.tar.gz can be extracted automatically." >&2
       exit 1
     fi
 
@@ -668,18 +668,17 @@ CURRENT_BUNDLE_DIR=""
 
 create_copy_bundle() {
   local bundle_dir
-  bundle_dir="$(copy_bundle_dir)"
+  bundle_dir="$COPY_DIR"
 
   mkdir -p "$COPY_DIR"
-  find "$COPY_DIR" -mindepth 1 -maxdepth 1 -type d -name 'extract_me_*' -exec rm -rf {} + 2>/dev/null || true
+  rm -rf "$COPY_DIR"/extract_me_* 2>/dev/null || true
+  rm -f "$COPY_DIR"/*.tar.gz "$COPY_DIR"/airgapped.sh 2>/dev/null || true
 
-  mkdir -p "$bundle_dir"
   cp -f "$SCRIPT_DIR/airgapped.sh" "$bundle_dir/airgapped.sh"
 
   CURRENT_BUNDLE_DIR="$bundle_dir"
   echo "==> Created copy bundle -> $bundle_dir"
 }
-
 do_save() {
   ensure_engine_ready "$SAVE_ENGINE" "--save"
   create_copy_bundle
@@ -788,7 +787,7 @@ do_save() {
   echo "==> Bundle files:"
   ls -lh "$bundle_dir"
   echo ""
-  echo "Copy this directory to the airgapped machine:"
+  echo "Copy this ./copy directory to the airgapped machine:"
   echo "  $bundle_dir"
   echo "Then run:"
   echo "  cd $bundle_dir"
