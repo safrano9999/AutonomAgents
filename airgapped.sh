@@ -577,7 +577,7 @@ ensure_openclaw_repo_for_patch() {
   if [[ ! -d "$repo_dir" ]]; then
     if [[ "$MODE" == "load" ]]; then
       echo "ERROR: openclaw/ not found for --load at $repo_dir" >&2
-      echo "  Copy the generated copy/extract_me_<timestamp>/ folder with openclaw/ included." >&2
+      echo "  Run --load from the extract_me_<timestamp> folder so openclaw_github_v*.tar.gz can be extracted automatically." >&2
       exit 1
     fi
 
