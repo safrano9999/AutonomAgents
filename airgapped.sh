@@ -428,6 +428,337 @@ create_copy_bundle() {
   echo "==> Created copy bundle -> $bundle_dir"
 }
 
+ledger_contains() {
+  local entry="$1"
+  [[ -f "$LEDGER_FILE" ]] && grep -qxF "$entry" "$LEDGER_FILE"
+}
+
+ledger_add() {
+  local entry="$1"
+  mkdir -p "$(dirname "$LEDGER_FILE")"
+  echo "$entry" >> "$LEDGER_FILE"
+}
+
+get_deployed_version() {
+  local component="$1"
+  if [[ -f "$DEPLOYED_FILE" ]]; then
+    grep "^${component}:" "$DEPLOYED_FILE" 2>/dev/null | tail -1 | awk -F: '{print $NF}'
+  fi
+}
+
+set_deployed_version() {
+  local component="$1"
+  local version="$2"
+  mkdir -p "$(dirname "$DEPLOYED_FILE")"
+  if [[ -f "$DEPLOYED_FILE" ]]; then
+    sed -i "/^${component}:/d" "$DEPLOYED_FILE"
+  fi
+  echo "${component}:${version}" >> "$DEPLOYED_FILE"
+}
+
+cleanup_remove_image_refs() {
+  local engine="$1"
+  shift
+  local removed=0
+  local ref
+  for ref in "$@"; do
+    [[ -n "$ref" ]] || continue
+    if "$engine" image inspect "$ref" >/dev/null 2>&1; then
+      if "$engine" rmi -f "$ref" >/dev/null 2>&1; then
+        echo "  removed: $ref"
+        removed=$((removed + 1))
+      fi
+    fi
+  done
+  echo "  total removed images: $removed"
+}
+
+cleanup_collect_candidate_refs() {
+  local engine="$1"
+  "$engine" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
+    | awk '!seen[$0]++' \
+    | sed '/^<none>:<none>$/d'
+}
+
+cleanup_prune_layers_for_load() {
+  local engine="$1"
+  echo "==> Pruning builder cache layers (${engine} builder prune --filter type=exec.cachemount)"
+  if "$engine" builder prune -f --filter type=exec.cachemount >/dev/null 2>&1; then
+    echo "  builder cache pruned (exec.cachemount)"
+    return
+  fi
+
+  echo "  exec.cachemount filter not supported, fallback to dangling image prune"
+  "$engine" image prune -f >/dev/null 2>&1 || true
+}
+
+ensure_openclaw_tags_from_version() {
+  local engine="$1"
+  local source_ref="${2:-}"
+  local version_tag="${3:-}"
+
+  local latest_ref="openclaw:local"
+  local latest_localhost="localhost/openclaw:local"
+  local version_ref="openclaw:${version_tag}"
+  local version_localhost="localhost/openclaw:${version_tag}"
+
+  if [[ -n "$source_ref" ]] && "$engine" image inspect "$source_ref" >/dev/null 2>&1; then
+    [[ -n "$version_tag" ]] && "$engine" tag "$source_ref" "$version_ref" >/dev/null 2>&1 || true
+    "$engine" tag "$source_ref" "$latest_ref" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n "$version_tag" ]] && "$engine" image inspect "$version_ref" >/dev/null 2>&1; then
+    "$engine" tag "$version_ref" "$latest_ref" >/dev/null 2>&1 || true
+    "$engine" tag "$version_ref" "$latest_localhost" >/dev/null 2>&1 || true
+    "$engine" tag "$version_ref" "$version_localhost" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  if "$engine" image inspect "$latest_ref" >/dev/null 2>&1; then
+    "$engine" tag "$latest_ref" "$latest_localhost" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  if "$engine" image inspect "$latest_localhost" >/dev/null 2>&1; then
+    "$engine" tag "$latest_localhost" "$latest_ref" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  return 1
+}
+
+ensure_hermes_tags_from_version() {
+  local engine="$1"
+  local source_ref="${2:-}"
+  local version_tag="${3:-}"
+
+  local repo_short="${HERMES_REGISTRY#docker.io/}"
+  local latest_ref="${repo_short}:latest"
+  local latest_localhost="localhost/${repo_short}:latest"
+  local version_ref="${repo_short}:${version_tag}"
+  local version_localhost="localhost/${repo_short}:${version_tag}"
+
+  if [[ -n "$source_ref" ]] && "$engine" image inspect "$source_ref" >/dev/null 2>&1; then
+    [[ -n "$version_tag" ]] && "$engine" tag "$source_ref" "$version_ref" >/dev/null 2>&1 || true
+    "$engine" tag "$source_ref" "$latest_ref" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n "$version_tag" ]] && "$engine" image inspect "$version_ref" >/dev/null 2>&1; then
+    "$engine" tag "$version_ref" "$latest_ref" >/dev/null 2>&1 || true
+    "$engine" tag "$version_ref" "$latest_localhost" >/dev/null 2>&1 || true
+    "$engine" tag "$version_ref" "$version_localhost" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  return 1
+}
+
+offer_cleanup_after_save() {
+  local engine="$SAVE_ENGINE"
+  if [[ ! -t 0 ]]; then
+    echo ""
+    echo "==> Cleanup option skipped (non-interactive shell)"
+    return
+  fi
+
+  echo ""
+  local answer
+  answer="$(ask_yes_no "Cleanup now? Remove local OpenClaw/Hermes images and dangling layers on this machine? [yes/no]:" "no")"
+  if [[ "$answer" != "yes" ]]; then
+    echo "==> Cleanup skipped"
+    return
+  fi
+
+  local -a refs_to_remove=()
+  local ref
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    case "$ref" in
+      openclaw:local|localhost/openclaw:local|openclaw:v*|localhost/openclaw:v*|${OPENCLAW_REGISTRY}:*|ghcr.io/openclaw/openclaw:*|openclaw/openclaw:*|${HERMES_REGISTRY#docker.io/}:latest|localhost/${HERMES_REGISTRY#docker.io/}:latest|${HERMES_REGISTRY#docker.io/}:v*|localhost/${HERMES_REGISTRY#docker.io/}:v*|${HERMES_REGISTRY}:*|${HERMES_REGISTRY#docker.io/}:*|nousresearch/hermes-agent:*)
+        refs_to_remove+=("$ref")
+        ;;
+    esac
+  done < <(cleanup_collect_candidate_refs "$engine")
+
+  echo "==> Cleanup (${engine}): removing OpenClaw/Hermes images"
+  cleanup_remove_image_refs "$engine" "${refs_to_remove[@]}"
+
+  echo "==> Pruning dangling image layers"
+  "$engine" image prune -f >/dev/null 2>&1 || true
+}
+
+offer_cleanup_after_load() {
+  local engine="$LOAD_ENGINE"
+  if [[ ! -t 0 ]]; then
+    echo ""
+    echo "==> Cleanup option skipped (non-interactive shell)"
+    return
+  fi
+
+  echo ""
+  local answer
+  answer="$(ask_yes_no "Cleanup legacy now? Remove old redundant OpenClaw/Hermes images (keep current) and prune legacy layers? [yes/no]:" "no")"
+  if [[ "$answer" != "yes" ]]; then
+    echo "==> Cleanup skipped"
+    return
+  fi
+
+  local keep_openclaw=""
+  local keep_openclaw_localhost=""
+  local keep_openclaw_version=""
+  local keep_openclaw_version_localhost=""
+  local keep_hermes_latest=""
+  local keep_hermes_latest_localhost=""
+  local keep_hermes_version=""
+  local keep_hermes_version_localhost=""
+  local keep_hermes_full=""
+  local keep_hermes_short=""
+  if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
+    keep_openclaw="openclaw:local"
+    keep_openclaw_localhost="localhost/openclaw:local"
+    keep_openclaw_version="openclaw:v${OPENCLAW_VERSION}"
+    keep_openclaw_version_localhost="localhost/openclaw:v${OPENCLAW_VERSION}"
+  fi
+  if [[ "$ENABLE_HERMES" == "yes" && -n "$HERMES_VERSION" ]]; then
+    local hermes_tag
+    keep_hermes_latest="${HERMES_REGISTRY#docker.io/}:latest"
+    keep_hermes_latest_localhost="localhost/${HERMES_REGISTRY#docker.io/}:latest"
+    if [[ "$HERMES_VERSION" == "latest" ]]; then
+      hermes_tag="latest"
+    else
+      hermes_tag="v${HERMES_VERSION}"
+    fi
+    keep_hermes_version="${HERMES_REGISTRY#docker.io/}:${hermes_tag}"
+    keep_hermes_version_localhost="localhost/${HERMES_REGISTRY#docker.io/}:${hermes_tag}"
+    keep_hermes_full="${HERMES_REGISTRY}:${hermes_tag}"
+    keep_hermes_short="${HERMES_REGISTRY#docker.io/}:${hermes_tag}"
+  fi
+
+  local -a refs_to_remove=()
+  local ref
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    case "$ref" in
+      openclaw:local|localhost/openclaw:local|openclaw:v*|localhost/openclaw:v*|${OPENCLAW_REGISTRY}:*|ghcr.io/openclaw/openclaw:*|openclaw/openclaw:*|${HERMES_REGISTRY#docker.io/}:latest|localhost/${HERMES_REGISTRY#docker.io/}:latest|${HERMES_REGISTRY#docker.io/}:v*|localhost/${HERMES_REGISTRY#docker.io/}:v*|${HERMES_REGISTRY}:*|${HERMES_REGISTRY#docker.io/}:*|nousresearch/hermes-agent:*)
+        ;;
+      *)
+        continue
+        ;;
+    esac
+
+    if [[ -n "$keep_openclaw" && "$ref" == "$keep_openclaw" ]]; then continue; fi
+    if [[ -n "$keep_openclaw_localhost" && "$ref" == "$keep_openclaw_localhost" ]]; then continue; fi
+    if [[ -n "$keep_openclaw_version" && "$ref" == "$keep_openclaw_version" ]]; then continue; fi
+    if [[ -n "$keep_openclaw_version_localhost" && "$ref" == "$keep_openclaw_version_localhost" ]]; then continue; fi
+    if [[ -n "$keep_hermes_latest" && "$ref" == "$keep_hermes_latest" ]]; then continue; fi
+    if [[ -n "$keep_hermes_latest_localhost" && "$ref" == "$keep_hermes_latest_localhost" ]]; then continue; fi
+    if [[ -n "$keep_hermes_version" && "$ref" == "$keep_hermes_version" ]]; then continue; fi
+    if [[ -n "$keep_hermes_version_localhost" && "$ref" == "$keep_hermes_version_localhost" ]]; then continue; fi
+    if [[ -n "$keep_hermes_full" && "$ref" == "$keep_hermes_full" ]]; then continue; fi
+    if [[ -n "$keep_hermes_short" && "$ref" == "$keep_hermes_short" ]]; then continue; fi
+
+    refs_to_remove+=("$ref")
+  done < <(cleanup_collect_candidate_refs "$engine")
+
+  echo "==> Cleanup (${engine}): removing legacy OpenClaw/Hermes images"
+  cleanup_remove_image_refs "$engine" "${refs_to_remove[@]}"
+  cleanup_prune_layers_for_load "$engine"
+}
+
+ensure_openclaw_repo_for_patch() {
+  local repo_dir="$SCRIPT_DIR/openclaw"
+  local desired_ref="main"
+
+  if [[ -n "${OPENCLAW_VERSION:-}" && "${OPENCLAW_VERSION}" != "latest" ]]; then
+    desired_ref="v${OPENCLAW_VERSION}"
+  fi
+
+  if [[ ! -d "$repo_dir" ]]; then
+    echo "==> openclaw/ not found, cloning ${OPENCLAW_REPO} (${desired_ref})"
+    if ! git clone --depth 1 --branch "$desired_ref" "$OPENCLAW_REPO" "$repo_dir"; then
+      if [[ "$desired_ref" != "main" ]]; then
+        echo "==> Clone for ${desired_ref} failed, retrying main"
+        if [[ -d "$repo_dir/.git" ]]; then
+          git -C "$repo_dir" fetch --depth 1 origin main
+          git -C "$repo_dir" checkout -B main origin/main
+        else
+          echo "ERROR: Could not clone openclaw repository. Partial directory at $repo_dir" >&2
+          echo "  Remove that directory manually and retry." >&2
+          exit 1
+        fi
+      else
+        exit 1
+      fi
+    fi
+  fi
+}
+
+ensure_setup_force_recreate() {
+  local setup_file="$1"
+
+  if grep -q 'up -d --force-recreate openclaw-gateway' "$setup_file" 2>/dev/null; then
+    return
+  fi
+
+  if grep -q 'up -d openclaw-gateway' "$setup_file" 2>/dev/null; then
+    sed -i 's/up -d openclaw-gateway/up -d --force-recreate openclaw-gateway/' "$setup_file"
+    echo "  Enabled force-recreate for openclaw-gateway startup"
+  fi
+}
+
+patch_setup() {
+  local repo_dir="$SCRIPT_DIR/openclaw"
+  local setup_file="$repo_dir/scripts/docker/setup.sh"
+  local patch_file="$SCRIPT_DIR/assets/setup-offline.patch"
+
+  ensure_openclaw_repo_for_patch
+
+  if [[ ! -f "$setup_file" ]]; then
+    echo "ERROR: setup.sh not found at $setup_file" >&2
+    exit 1
+  fi
+
+  if [[ ! -f "$patch_file" ]]; then
+    echo "ERROR: Patch file not found at $patch_file" >&2
+    exit 1
+  fi
+
+  if grep -Eq 'offline mode, skipping build|already exists locally, skipping build' "$setup_file" 2>/dev/null; then
+    ensure_setup_force_recreate "$setup_file"
+    echo "==> setup.sh already patched"
+    return
+  fi
+
+  echo "==> Patching setup.sh with $patch_file"
+  cp "$setup_file" "${setup_file}.bak"
+
+  if patch --forward --directory="$repo_dir" -p1 < "$patch_file"; then
+    ensure_setup_force_recreate "$setup_file"
+    echo "  Patched successfully"
+    return
+  fi
+
+  echo "==> Retrying patch with fuzzy context matching (-F3)"
+  if patch --forward --fuzz=3 --directory="$repo_dir" -p1 < "$patch_file"; then
+    ensure_setup_force_recreate "$setup_file"
+    echo "  Patched successfully (fuzzy match)"
+    return
+  fi
+
+  if patch --reverse --dry-run --directory="$repo_dir" -p1 < "$patch_file" >/dev/null 2>&1; then
+    ensure_setup_force_recreate "$setup_file"
+    echo "==> setup.sh already patched"
+    cp "${setup_file}.bak" "$setup_file"
+    return
+  fi
+
+  echo "ERROR: Patch failed. New upstream version?" >&2
+  echo "  Backup at: ${setup_file}.bak" >&2
+  echo "  Patch file: $patch_file" >&2
+  cp "${setup_file}.bak" "$setup_file"
+  exit 1
+}
+
 do_save() {
   ensure_engine_ready "$SAVE_ENGINE" "--save"
   create_copy_bundle
