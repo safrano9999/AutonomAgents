@@ -158,6 +158,38 @@ detect_version_from_archives() {
   echo "$latest"
 }
 
+detect_image_version_from_archives() {
+  local prefix="$1"
+  local latest=""
+  local f
+
+  for dir in "$PWD" "$SCRIPT_DIR" "$SCRIPT_DIR/copy"; do
+    for f in "$dir"/${prefix}_*_v*.tar.gz; do
+      [[ -f "$f" ]] || continue
+      local base arch ver
+      base="$(basename "$f")"
+      arch="${base#${prefix}_}"
+      arch="${arch%%_v*}"
+      ver="${base#${prefix}_${arch}_v}"
+      ver="${ver%.tar.gz}"
+
+      if ! echo "$VALID_ARCHS" | grep -qw "$arch"; then
+        continue
+      fi
+
+      if [[ -n "$ARCH_SUFFIX" && "$arch" != "$ARCH_SUFFIX" ]]; then
+        continue
+      fi
+
+      if [[ -z "$latest" || "$ver" > "$latest" ]]; then
+        latest="$ver"
+      fi
+    done
+  done
+
+  echo "$latest"
+}
+
 resolve_openclaw_version() {
   if [[ "$OPENCLAW_VERSION" == "latest" ]]; then
     echo "latest"
@@ -194,9 +226,11 @@ ask_yes_no() {
   local prompt="$1"
   local default="${2:-}"
   local reply
+  local reply_lc
   while true; do
     read -rp "$prompt " reply
-    case "${reply,,}" in
+    reply_lc="$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')"
+    case "$reply_lc" in
       y|yes) echo "yes"; return ;;
       n|no)  echo "no"; return ;;
       "")
@@ -215,6 +249,8 @@ ask_choice() {
   shift 2
   local options=("$@")
   local reply
+  local reply_lc
+  local opt_lc
   while true; do
     [[ -n "$prompt" ]] && echo "$prompt" >&2
     for i in "${!options[@]}"; do
@@ -236,8 +272,10 @@ ask_choice() {
       return
     fi
 
+    reply_lc="$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')"
     for opt in "${options[@]}"; do
-      if [[ "${reply,,}" == "${opt,,}" ]]; then
+      opt_lc="$(printf '%s' "$opt" | tr '[:upper:]' '[:lower:]')"
+      if [[ "$reply_lc" == "$opt_lc" ]]; then
         printf '%s\n' "$opt"
         return
       fi
@@ -281,7 +319,48 @@ run_setup_dialog() {
   fi
   echo ""
 }
-if [[ "$MODE" != "patch" ]]; then
+
+run_load_setup() {
+  echo ""
+  echo "======================================"
+  echo "  Airgapped Deployment - Load"
+  echo "======================================"
+  echo ""
+
+  LOAD_ENGINE="$(ask_choice "Container engine for loading/deploying (airgapped machine):" "docker" "docker" "podman")"
+
+  if [[ -z "$OPENCLAW_VERSION" ]]; then
+    OPENCLAW_VERSION="$(detect_image_version_from_archives "openclaw")"
+  fi
+  if [[ -n "$OPENCLAW_VERSION" ]]; then
+    ENABLE_OPENCLAW="yes"
+  else
+    ENABLE_OPENCLAW="no"
+  fi
+
+  if [[ -z "$HERMES_VERSION" ]]; then
+    HERMES_VERSION="$(detect_image_version_from_archives "hermes")"
+  fi
+  if [[ -n "$HERMES_VERSION" ]]; then
+    ENABLE_HERMES="yes"
+  else
+    ENABLE_HERMES="no"
+  fi
+
+  if [[ "$ENABLE_HERMES" == "no" && "$ENABLE_OPENCLAW" == "no" ]]; then
+    echo "ERROR: No loadable OpenClaw or Hermes image archives found" >&2
+    echo "  Expected openclaw_*_v*.tar.gz and/or hermes_*_v*.tar.gz in current folder, script folder, or ./copy" >&2
+    exit 1
+  fi
+
+  echo ""
+  echo "  Hermes Agent:    $ENABLE_HERMES${HERMES_VERSION:+ (v$HERMES_VERSION)}"
+  echo "  OpenClaw:        $ENABLE_OPENCLAW${OPENCLAW_VERSION:+ (v$OPENCLAW_VERSION)}"
+  echo "  Deploy engine:   $LOAD_ENGINE"
+  echo ""
+}
+
+if [[ "$MODE" == "save" ]]; then
   run_setup_dialog
 
   if [[ "$ENABLE_OPENCLAW" == "yes" ]]; then
@@ -293,6 +372,8 @@ if [[ "$MODE" != "patch" ]]; then
     HERMES_VERSION="$(resolve_hermes_version)"
     [[ -n "$HERMES_VERSION" ]] && echo "==> Hermes version: $HERMES_VERSION"
   fi
+elif [[ "$MODE" == "load" ]]; then
+  run_load_setup
 fi
 
 check_qemu() {
@@ -418,6 +499,9 @@ create_copy_bundle() {
   if [[ -d "$SCRIPT_DIR/assets" ]]; then
     mkdir -p "$stage_dir/assets"
     cp -a "$SCRIPT_DIR/assets/." "$stage_dir/assets/"
+    if [[ -f "$stage_dir/assets/hermes-docker-compose.yml" ]]; then
+      ln -s "assets/hermes-docker-compose.yml" "$stage_dir/hermes-docker-compose.yml"
+    fi
   fi
 
   tar -cf "$bundle_dir/$helper_tar" -C "$stage_dir" .
