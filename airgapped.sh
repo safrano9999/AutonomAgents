@@ -532,6 +532,21 @@ ensure_openclaw_repo_archive() {
 
 CURRENT_BUNDLE_DIR=""
 
+ensure_copy_run_script() {
+  local source="$SCRIPT_DIR/assets/run.sh"
+  local target="$COPY_DIR/run.sh"
+
+  if [[ ! -f "$source" ]]; then
+    echo "ERROR: run helper missing at $source" >&2
+    exit 1
+  fi
+
+  if [[ ! -f "$target" ]]; then
+    cp -f "$source" "$target"
+  fi
+  chmod +x "$target"
+}
+
 create_copy_bundle() {
   local bundle_dir
   local stage_dir
@@ -541,14 +556,16 @@ create_copy_bundle() {
   helper_tar="$(extract_helper_file)"
 
   mkdir -p "$COPY_DIR"
-  find "$COPY_DIR" -mindepth 1 -maxdepth 1 ! -name '*.tar' ! -name '*.tar.gz' -exec rm -rf -- {} +
+  find "$COPY_DIR" -mindepth 1 -maxdepth 1 ! -name '*.tar' ! -name '*.tar.gz' ! -name 'run.sh' -exec rm -rf -- {} +
   rm -f "$COPY_DIR"/extract_me.tar "$COPY_DIR"/extract_me_*.tar 2>/dev/null || true
+  ensure_copy_run_script
 
   stage_dir="$(mktemp -d)"
   cp -f "$SCRIPT_DIR/airgapped.sh" "$stage_dir/airgapped.sh"
   if [[ -d "$SCRIPT_DIR/assets" ]]; then
     mkdir -p "$stage_dir/assets"
     cp -a "$SCRIPT_DIR/assets/." "$stage_dir/assets/"
+    rm -f "$stage_dir/assets/run.sh"
     if [[ -f "$stage_dir/assets/hermes-docker-compose.yml" ]]; then
       ln -s "assets/hermes-docker-compose.yml" "$stage_dir/hermes-docker-compose.yml"
     fi
@@ -1015,12 +1032,11 @@ do_save() {
   echo ""
   local helper_tar
   helper_tar="$(extract_helper_file)"
-  echo "Copy this ./copy directory to the airgapped machine (contains $helper_tar + image archives):"
+  echo "Copy this ./copy directory to the airgapped machine (contains run.sh, $helper_tar + image archives):"
   echo "  $bundle_dir"
   echo "Then run:"
   echo "  cd $bundle_dir"
-  echo "  tar -xf $helper_tar"
-  echo "  ./airgapped.sh --load"
+  echo "  ./run.sh"
 
   offer_cleanup_after_save
 }

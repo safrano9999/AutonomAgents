@@ -4,9 +4,10 @@ Tooling for exporting and loading **OpenClaw** + **Hermes** in airgapped environ
 
 ## 📦 `./copy` output
 
-`--save` writes only archives to `./copy/`.
+`--save` writes transfer files to `./copy/`.
 
 Always present:
+- `run.sh` (extracts the helper archive and starts `--load`)
 - `extract_me_<timestamp>.tar` (contains `airgapped.sh` + `assets/` incl. patch + Hermes compose)
 
 Depending on selected components:
@@ -28,8 +29,7 @@ Connected machine:
 Airgapped machine:
 ```bash
 cd copy
-tar -xf extract_me_<timestamp>.tar
-./airgapped.sh --load
+./run.sh
 ```
 
 `--load` imports images and patches setup files. It does **not** start containers automatically.
