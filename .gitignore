@@ -2,3 +2,4 @@ output/
 openclaw/
 *.tar.gz
 .claude/
+.codex
