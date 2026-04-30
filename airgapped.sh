@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 COPY_DIR="./copy"
+TMP_DIR="./tmp"
 LEDGER_FILE="$SCRIPT_DIR/.ledger"
 DEPLOYED_FILE="$SCRIPT_DIR/.deployed"
 
@@ -60,7 +61,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$MODE" ]] && { echo "ERROR: --save, --load or --patch required" >&2; usage; }
-mkdir -p ./copy
+mkdir -p "$COPY_DIR"
 
 ARCH_SUFFIX=""
 VALID_ARCHS="amd64 arm64 arm s390x ppc64le riscv64"
@@ -463,22 +464,70 @@ oc_repo_file() {
   echo "openclaw_github_v${OPENCLAW_VERSION}.tar.gz"
 }
 
+openclaw_repo_ref() {
+  if [[ -n "${OPENCLAW_VERSION:-}" && "${OPENCLAW_VERSION}" != "latest" ]]; then
+    echo "v${OPENCLAW_VERSION}"
+  else
+    echo "main"
+  fi
+}
+
+prepare_openclaw_tmp_repo() {
+  local desired_ref
+  local repo_dir="$SCRIPT_DIR/$TMP_DIR/openclaw"
+
+  desired_ref="$(openclaw_repo_ref)"
+  mkdir -p "$SCRIPT_DIR/$TMP_DIR"
+
+  if [[ -d "$repo_dir/.git" ]]; then
+    echo "==> Updating OpenClaw repo snapshot in $TMP_DIR/openclaw ($desired_ref)" >&2
+    git -C "$repo_dir" remote set-url origin "$OPENCLAW_REPO" >/dev/null 2>&1 || true
+    if git -C "$repo_dir" fetch --depth 1 origin "$desired_ref" >&2; then
+      git -C "$repo_dir" checkout --detach FETCH_HEAD >&2
+      git -C "$repo_dir" reset --hard FETCH_HEAD >&2
+    elif [[ "$desired_ref" != "main" ]]; then
+      echo "==> Fetch for $desired_ref failed, retrying main" >&2
+      git -C "$repo_dir" fetch --depth 1 origin main >&2
+      git -C "$repo_dir" checkout --detach FETCH_HEAD >&2
+      git -C "$repo_dir" reset --hard FETCH_HEAD >&2
+    else
+      echo "ERROR: Could not update OpenClaw repo snapshot in $repo_dir" >&2
+      exit 1
+    fi
+  else
+    rm -rf "$repo_dir"
+    echo "==> Cloning OpenClaw repo snapshot into $TMP_DIR/openclaw ($desired_ref)" >&2
+    if ! git clone --depth 1 --branch "$desired_ref" "$OPENCLAW_REPO" "$repo_dir"; then
+      if [[ "$desired_ref" != "main" ]]; then
+        echo "==> Clone for $desired_ref failed, retrying main" >&2
+        rm -rf "$repo_dir"
+        git clone --depth 1 --branch main "$OPENCLAW_REPO" "$repo_dir"
+      else
+        exit 1
+      fi
+    fi
+  fi
+
+  echo "$repo_dir"
+}
+
 ensure_openclaw_repo_archive() {
   local target_dir="${1:-$SCRIPT_DIR}"
-  local repo_dir="$SCRIPT_DIR/openclaw"
+  local repo_dir
   local repo_file
   local repo_archive
 
   repo_file="$(oc_repo_file)"
   repo_archive="$target_dir/$repo_file"
+  repo_dir="$(prepare_openclaw_tmp_repo)"
 
-  if [[ ! -d "$repo_dir" ]]; then
-    echo "ERROR: openclaw/ directory missing, cannot create repo archive" >&2
-    exit 1
-  fi
+  patch_openclaw_setup_repo "$repo_dir"
+  rm -f "$repo_dir/scripts/docker/setup.sh.bak" 2>/dev/null || true
 
+  rm -f "$repo_archive"
   echo "==> Saving openclaw repo archive -> $repo_archive"
-  tar -czf "$repo_archive" -C "$SCRIPT_DIR" openclaw
+  tar --exclude='openclaw/.git' --exclude='openclaw/scripts/docker/setup.sh.bak' \
+    -czf "$repo_archive" -C "$SCRIPT_DIR/$TMP_DIR" openclaw
 }
 
 CURRENT_BUNDLE_DIR=""
@@ -492,6 +541,7 @@ create_copy_bundle() {
   helper_tar="$(extract_helper_file)"
 
   mkdir -p "$COPY_DIR"
+  find "$COPY_DIR" -mindepth 1 -maxdepth 1 ! -name '*.tar' ! -name '*.tar.gz' -exec rm -rf -- {} +
   rm -f "$COPY_DIR"/extract_me.tar "$COPY_DIR"/extract_me_*.tar 2>/dev/null || true
 
   stage_dir="$(mktemp -d)"
@@ -751,11 +801,8 @@ offer_cleanup_after_load() {
 
 ensure_openclaw_repo_for_patch() {
   local repo_dir="$SCRIPT_DIR/openclaw"
-  local desired_ref="main"
-
-  if [[ -n "${OPENCLAW_VERSION:-}" && "${OPENCLAW_VERSION}" != "latest" ]]; then
-    desired_ref="v${OPENCLAW_VERSION}"
-  fi
+  local desired_ref
+  desired_ref="$(openclaw_repo_ref)"
 
   if [[ ! -d "$repo_dir" ]]; then
     echo "==> openclaw/ not found, cloning ${OPENCLAW_REPO} (${desired_ref})"
@@ -790,12 +837,10 @@ ensure_setup_force_recreate() {
   fi
 }
 
-patch_setup() {
-  local repo_dir="$SCRIPT_DIR/openclaw"
+patch_openclaw_setup_repo() {
+  local repo_dir="$1"
   local setup_file="$repo_dir/scripts/docker/setup.sh"
   local patch_file="$SCRIPT_DIR/assets/setup-offline.patch"
-
-  ensure_openclaw_repo_for_patch
 
   if [[ ! -f "$setup_file" ]]; then
     echo "ERROR: setup.sh not found at $setup_file" >&2
@@ -841,6 +886,11 @@ patch_setup() {
   echo "  Patch file: $patch_file" >&2
   cp "${setup_file}.bak" "$setup_file"
   exit 1
+}
+
+patch_setup() {
+  ensure_openclaw_repo_for_patch
+  patch_openclaw_setup_repo "$SCRIPT_DIR/openclaw"
 }
 
 do_save() {
@@ -893,13 +943,7 @@ do_save() {
       $SAVE_ENGINE save "openclaw:local" | gzip > "$oc_archive"
     fi
 
-    patch_setup
-    local oc_repo_archive="$bundle_dir/$(oc_repo_file)"
-    if [[ -f "$oc_repo_archive" ]]; then
-      echo "==> OpenClaw repo archive already present, skipping export: $(basename "$oc_repo_archive")"
-    else
-      ensure_openclaw_repo_archive "$bundle_dir"
-    fi
+    ensure_openclaw_repo_archive "$bundle_dir"
 
     if ! ledger_contains "$oc_ledger"; then
       ledger_add "$oc_ledger"
