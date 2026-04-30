@@ -1,5 +1,6 @@
 output/
 openclaw/
+copy/
 *.tar.gz
-.claude/
+.claude
 .codex

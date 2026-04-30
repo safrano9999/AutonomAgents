@@ -492,7 +492,7 @@ create_copy_bundle() {
   helper_tar="$(extract_helper_file)"
 
   mkdir -p "$COPY_DIR"
-  rm -f "$COPY_DIR"/extract_me_*.tar 2>/dev/null || true
+  rm -f "$COPY_DIR"/extract_me.tar "$COPY_DIR"/extract_me_*.tar 2>/dev/null || true
 
   stage_dir="$(mktemp -d)"
   cp -f "$SCRIPT_DIR/airgapped.sh" "$stage_dir/airgapped.sh"
