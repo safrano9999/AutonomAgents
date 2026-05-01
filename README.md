@@ -38,7 +38,9 @@ OPENCLAW_VERSION=2026.4.24
 HERMES_VERSION=0.1.0
 ```
 
-OpenClaw `<=2026.4.24` uses `assets/setup-offline-legacy.patch`; OpenClaw `>=2026.4.25` uses `assets/setup-offline.patch`.
+OpenClaw setup patches:
+- `<= v2026.4.24`: [old setup.sh patch](https://github.com/safrano9999/AutonomAgents/blob/a46519a17f8d3540d805d7b1ef8d58a70f988478/patches/openclaw-setup-airgap.patch)
+- `=> 2026.4.25`: [new setup.sh patch](https://github.com/safrano9999/AutonomAgents/blob/main/assets/setup-offline.patch)
 
 Airgapped machine:
 ```bash
