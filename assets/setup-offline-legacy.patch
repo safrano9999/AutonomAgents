@@ -1,0 +1,25 @@
+--- a/scripts/docker/setup.sh
++++ b/scripts/docker/setup.sh
+@@ -492,14 +492,14 @@
+   OPENCLAW_OTEL_PRELOADED
+ 
+ if [[ "$IMAGE_NAME" == "openclaw:local" ]]; then
+-  echo "==> Building Docker image: $IMAGE_NAME"
+-  run_docker_build \
+-    --build-arg "OPENCLAW_DOCKER_APT_PACKAGES=${OPENCLAW_DOCKER_APT_PACKAGES}" \
+-    --build-arg "OPENCLAW_EXTENSIONS=${OPENCLAW_EXTENSIONS}" \
+-    --build-arg "OPENCLAW_INSTALL_DOCKER_CLI=${OPENCLAW_INSTALL_DOCKER_CLI:-}" \
+-    -t "$IMAGE_NAME" \
+-    -f "$ROOT_DIR/Dockerfile" \
+-    "$ROOT_DIR"
++  if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
++    echo "==> Using preloaded local image: $IMAGE_NAME (offline mode, skipping build)"
++  else
++    echo "ERROR: Expected preloaded local image '$IMAGE_NAME' not found." >&2
++    echo "  Airgapped setup is offline-only and will not build or pull images." >&2
++    echo "  Load your exported image first (airgapped.sh --load)." >&2
++    exit 1
++  fi
+ else
+   echo "==> Pulling Docker image: $IMAGE_NAME"
+   if ! docker pull "$IMAGE_NAME"; then

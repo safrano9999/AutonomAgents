@@ -8,7 +8,7 @@ Tooling for exporting and loading **OpenClaw** + **Hermes** in airgapped environ
 
 Always present:
 - `run.sh` (extracts the helper archive and starts `--load`)
-- `extract_me_<timestamp>.tar` (contains `airgapped.sh` + `assets/` incl. patch + Hermes compose)
+- `extract_me_<timestamp>.tar` (contains `airgapped.sh` + `assets/` incl. both OpenClaw setup patches + Hermes compose)
 
 Depending on selected components:
 - `openclaw_<arch>_v<version>.tar.gz`
@@ -25,6 +25,20 @@ Connected machine:
 ```bash
 ./airgapped.sh --save --arch linux/arm64
 ```
+
+Optional pinned versions:
+```bash
+OPENCLAW_VERSION=2026.4.24 HERMES_VERSION=0.1.0 ARCH=linux/arm64 ./airgapped.sh --save
+```
+
+Or create `airgapped.env` from `airgapped.env.example`:
+```bash
+ARCH=linux/arm64
+OPENCLAW_VERSION=2026.4.24
+HERMES_VERSION=0.1.0
+```
+
+OpenClaw `<=2026.4.24` uses `assets/setup-offline-legacy.patch`; OpenClaw `>=2026.4.25` uses `assets/setup-offline.patch`.
 
 Airgapped machine:
 ```bash

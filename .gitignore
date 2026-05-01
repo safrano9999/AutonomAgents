@@ -5,3 +5,4 @@ tmp/
 *.tar.gz
 .claude
 .codex
+airgapped.env

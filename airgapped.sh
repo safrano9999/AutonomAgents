@@ -3,18 +3,42 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-COPY_DIR="./copy"
-TMP_DIR="./tmp"
-LEDGER_FILE="$SCRIPT_DIR/.ledger"
-DEPLOYED_FILE="$SCRIPT_DIR/.deployed"
+CONFIG_FILE="${AIRGAPPED_CONFIG:-$SCRIPT_DIR/airgapped.env}"
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  if [[ "${args[$i]}" == "--config" ]]; then
+    if (( i + 1 >= ${#args[@]} )); then
+      echo "ERROR: --config requires a file path" >&2
+      exit 1
+    fi
+    CONFIG_FILE="${args[$((i + 1))]}"
+    break
+  fi
+done
 
-ENABLE_OPENCLAW=""
-ENABLE_HERMES=""
+if [[ -n "${AIRGAPPED_CONFIG:-}" || "$CONFIG_FILE" != "$SCRIPT_DIR/airgapped.env" || -f "$CONFIG_FILE" ]]; then
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "ERROR: Config file not found: $CONFIG_FILE" >&2
+    exit 1
+  fi
+  set -a
+  # shellcheck disable=SC1090
+  source "$CONFIG_FILE"
+  set +a
+fi
 
-MODE=""
-ARCH=""
-OPENCLAW_VERSION=""
-HERMES_VERSION=""
+COPY_DIR="${COPY_DIR:-./copy}"
+TMP_DIR="${TMP_DIR:-./tmp}"
+LEDGER_FILE="${LEDGER_FILE:-$SCRIPT_DIR/.ledger}"
+DEPLOYED_FILE="${DEPLOYED_FILE:-$SCRIPT_DIR/.deployed}"
+
+ENABLE_OPENCLAW="${ENABLE_OPENCLAW:-}"
+ENABLE_HERMES="${ENABLE_HERMES:-}"
+
+MODE="${MODE:-}"
+ARCH="${ARCH:-}"
+OPENCLAW_VERSION="${OPENCLAW_VERSION:-}"
+HERMES_VERSION="${HERMES_VERSION:-}"
 RUN_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 
 SAVE_ENGINE="${SAVE_ENGINE:-docker}"
@@ -34,6 +58,7 @@ Modes:
   --patch      Only patch openclaw/scripts/docker/setup.sh
 
 Options:
+  --config FILE              Optional shell env file (default: ./airgapped.env if present)
   --arch ARCH                Platform (required for --save), e.g. linux/arm64
   --openclaw-version VER     OpenClaw version or "latest" (default: auto)
   --hermes-version VER       Hermes version or "latest" (default: auto)
@@ -51,6 +76,7 @@ while [[ $# -gt 0 ]]; do
     --save) MODE="save"; shift ;;
     --load) MODE="load"; shift ;;
     --patch) MODE="patch"; shift ;;
+    --config) shift 2 ;;
     --arch) ARCH="$2"; shift 2 ;;
     --openclaw-version) OPENCLAW_VERSION="$2"; shift 2 ;;
     --hermes-version) HERMES_VERSION="$2"; shift 2 ;;
@@ -61,6 +87,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$MODE" ]] && { echo "ERROR: --save, --load or --patch required" >&2; usage; }
+if [[ "$OPENCLAW_VERSION" == v* ]]; then OPENCLAW_VERSION="${OPENCLAW_VERSION#v}"; fi
+if [[ "$HERMES_VERSION" == v* ]]; then HERMES_VERSION="${HERMES_VERSION#v}"; fi
 mkdir -p "$COPY_DIR"
 
 ARCH_SUFFIX=""
@@ -464,6 +492,21 @@ oc_repo_file() {
   echo "openclaw_github_v${OPENCLAW_VERSION}.tar.gz"
 }
 
+version_lte() {
+  local left="${1#v}"
+  local right="${2#v}"
+  [[ "$left" != "latest" && "$right" != "latest" ]] || return 1
+  [[ "$(printf '%s\n%s\n' "$left" "$right" | sort -V | head -1)" == "$left" ]]
+}
+
+openclaw_setup_patch_file() {
+  if [[ -n "$OPENCLAW_VERSION" ]] && version_lte "$OPENCLAW_VERSION" "2026.4.24"; then
+    echo "$SCRIPT_DIR/assets/setup-offline-legacy.patch"
+  else
+    echo "$SCRIPT_DIR/assets/setup-offline.patch"
+  fi
+}
+
 openclaw_repo_ref() {
   if [[ -n "${OPENCLAW_VERSION:-}" && "${OPENCLAW_VERSION}" != "latest" ]]; then
     echo "v${OPENCLAW_VERSION}"
@@ -857,7 +900,8 @@ ensure_setup_force_recreate() {
 patch_openclaw_setup_repo() {
   local repo_dir="$1"
   local setup_file="$repo_dir/scripts/docker/setup.sh"
-  local patch_file="$SCRIPT_DIR/assets/setup-offline.patch"
+  local patch_file
+  patch_file="$(openclaw_setup_patch_file)"
 
   if [[ ! -f "$setup_file" ]]; then
     echo "ERROR: setup.sh not found at $setup_file" >&2
@@ -875,7 +919,7 @@ patch_openclaw_setup_repo() {
     return
   fi
 
-  echo "==> Patching setup.sh with $patch_file"
+  echo "==> Patching setup.sh with $(basename "$patch_file")"
   cp "$setup_file" "${setup_file}.bak"
 
   if patch --forward --directory="$repo_dir" -p1 < "$patch_file"; then
