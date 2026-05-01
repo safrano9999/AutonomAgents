@@ -48,6 +48,16 @@ OPENCLAW_REGISTRY="${OPENCLAW_REGISTRY:-ghcr.io/openclaw/openclaw}"
 HERMES_REGISTRY="${HERMES_REGISTRY:-docker.io/nousresearch/hermes-agent}"
 OPENCLAW_REPO="${OPENCLAW_REPO:-https://github.com/openclaw/openclaw}"
 
+normalize_version_value() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  if [[ "$value" =~ ^[vV][0-9] ]]; then
+    value="${value:1}"
+  fi
+  echo "$value"
+}
+
 usage() {
   cat <<USAGE
 Usage: $(basename "$0") --save|--load|--patch [options]
@@ -87,8 +97,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$MODE" ]] && { echo "ERROR: --save, --load or --patch required" >&2; usage; }
-if [[ "$OPENCLAW_VERSION" == v* ]]; then OPENCLAW_VERSION="${OPENCLAW_VERSION#v}"; fi
-if [[ "$HERMES_VERSION" == v* ]]; then HERMES_VERSION="${HERMES_VERSION#v}"; fi
+OPENCLAW_VERSION="$(normalize_version_value "$OPENCLAW_VERSION")"
+HERMES_VERSION="$(normalize_version_value "$HERMES_VERSION")"
 mkdir -p "$COPY_DIR"
 
 ARCH_SUFFIX=""
@@ -232,6 +242,7 @@ resolve_openclaw_version() {
       [[ -z "$OPENCLAW_VERSION" ]] && { echo "ERROR: No openclaw archive found in current folder. Provide --openclaw-version or place archive in this folder" >&2; exit 1; }
     fi
   fi
+  OPENCLAW_VERSION="$(normalize_version_value "$OPENCLAW_VERSION")"
   echo "$OPENCLAW_VERSION"
 }
 
@@ -248,6 +259,7 @@ resolve_hermes_version() {
       [[ -z "$HERMES_VERSION" ]] && { echo "WARNING: No hermes archives found" >&2; HERMES_VERSION=""; }
     fi
   fi
+  HERMES_VERSION="$(normalize_version_value "$HERMES_VERSION")"
   echo "$HERMES_VERSION"
 }
 
@@ -361,6 +373,7 @@ run_load_setup() {
   if [[ -z "$OPENCLAW_VERSION" ]]; then
     OPENCLAW_VERSION="$(detect_image_version_from_archives "openclaw")"
   fi
+  OPENCLAW_VERSION="$(normalize_version_value "$OPENCLAW_VERSION")"
   if [[ -n "$OPENCLAW_VERSION" ]]; then
     ENABLE_OPENCLAW="yes"
   else
@@ -370,6 +383,7 @@ run_load_setup() {
   if [[ -z "$HERMES_VERSION" ]]; then
     HERMES_VERSION="$(detect_image_version_from_archives "hermes")"
   fi
+  HERMES_VERSION="$(normalize_version_value "$HERMES_VERSION")"
   if [[ -n "$HERMES_VERSION" ]]; then
     ENABLE_HERMES="yes"
   else

@@ -28,8 +28,10 @@ Connected machine:
 
 Optional pinned versions:
 ```bash
-OPENCLAW_VERSION=2026.4.24 HERMES_VERSION=0.1.0 ARCH=linux/arm64 ./airgapped.sh --save
+OPENCLAW_VERSION=v2026.4.24 HERMES_VERSION=v0.1.0 ARCH=linux/arm64 ./airgapped.sh --save
 ```
+
+Version values accept both forms: `v2026.4.24` and `2026.4.24` resolve to the same OpenClaw version.
 
 Or create `airgapped.env` from `airgapped.env.example`:
 ```bash
